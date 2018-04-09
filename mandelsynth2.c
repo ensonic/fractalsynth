@@ -506,6 +506,10 @@ initialize (AppData * self)
   wavenc = gst_element_factory_make ("wavenc", NULL);
   fsink = gst_element_factory_make ("filesink", NULL);
   g_object_set (G_OBJECT (fsink), "location", "mandelsynth2.wav", NULL);
+  g_object_set (G_OBJECT (q1), "max-size-buffers", 1, "max-size-bytes", 0,
+      "max-size-time", G_GUINT64_CONSTANT (0), "silent", TRUE, NULL);
+  g_object_set (G_OBJECT (q2), "max-size-buffers", 1, "max-size-bytes", 0,
+      "max-size-time", G_GUINT64_CONSTANT (0), "silent", TRUE, NULL);
 
   gst_bin_add_many (GST_BIN (self->pipe), self->src, conv, tee, q1, asink, q2,
       wavenc, fsink, NULL);
