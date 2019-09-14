@@ -1,9 +1,14 @@
 /*
  * mandelbrot synthesizer
  *
- * Copyright (C) 2011-2018 Stefan Kost <ensonic@users.sf.net>
+ * Copyright (C) 2011-2018 Stefan Sauer <ensonic@users.sf.net>
  *
  * gcc -Wall -g  mandelsynth2.c -o mandelsynth2 `pkg-config gtk+-3.0 cairo gstreamer-1.0 gstreamer-app-1.0 gstreamer-fft-1.0 --cflags --libs` -lm
+ *
+ * Usage:
+ * - left-mouse down + drag: change the sprectrum
+ * - '1': decrement center mode
+ - - '2': increment center mode
  */
 
 #include <math.h>
@@ -79,7 +84,7 @@ do_mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, GstFFTF64Complex * v)
 
       // set the rest to inital position to avoid noise
       for (m = n; m < maxn; m++) {
-        v[m].r = zr; 
+        v[m].r = zr;
         v[m].i = zi;
       }
       break;
@@ -220,7 +225,7 @@ process_orbit (AppData *self)
   }
   for (i = 0; i < self->ntime; i++) {
     nt[i] = t[i] / m;
-  }  
+  }
 }
 
 static void
@@ -247,11 +252,11 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
   if (self->motion) {
     guint i;
     const gdouble font_size = 10.0;
-    
+
     process_orbit (self);
-    
+
     cairo_set_font_size (cr, font_size);
-    
+
     // settings
     {
       gchar text[100];
@@ -320,7 +325,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
       cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
       cairo_rectangle (cr, 0.0, h - hs, self->w / 3.0, hs);
       cairo_fill (cr);
-      
+
       cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
       cairo_move_to (cr, 3.0, h - (hs + (font_size / 2.0)));
       cairo_show_text (cr, "spectrogram (magnitude: red, phase: green)");
@@ -381,7 +386,7 @@ on_size_allocate (GtkWidget * widget, GtkAllocation * allocation,
 }
 
 static gboolean
-on_pointer_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
+on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
 
@@ -425,7 +430,7 @@ on_pointer_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
             self->v);
 
         gtk_widget_queue_draw (self->window);
-        
+
       }
     default:
       break;
@@ -469,14 +474,14 @@ initialize (AppData * self)
 
   // create window and connect to signals
   self->window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
-  g_signal_connect (G_OBJECT (self->window), "destroy", 
+  g_signal_connect (G_OBJECT (self->window), "destroy",
       G_CALLBACK (gtk_main_quit), NULL);
   g_signal_connect (G_OBJECT (self->window), "size-allocate",
       G_CALLBACK (on_size_allocate), (gpointer) self);
   g_signal_connect (G_OBJECT (self->window), "draw",
       G_CALLBACK (on_draw), (gpointer) self);
   g_signal_connect (G_OBJECT (self->window), "event",
-      G_CALLBACK (on_pointer_event), (gpointer) self);
+      G_CALLBACK (on_interaction_event), (gpointer) self);
   gtk_widget_set_size_request (self->window, 600, 450);
   gtk_window_set_title (GTK_WINDOW (self->window),
       "Mandelbrot synthesizer: press left-button over black set and move (mind your audio volume)");
