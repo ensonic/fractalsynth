@@ -12,11 +12,25 @@
  * - '3': decrement octave
  * - '4': increment octave
  * - alpha keys (1 oct) to play notes ('y/z') -> c, 's' -> c#, ...
+ *
+ * need to run
+ * gsettings set org.gnome.desktop.peripherals.touchpad disable-while-typing false
+ * before starting this to be able to move the mouse while typing
  */
 /* TODO:
+ * - remove ifft
+ *   - instead render one cycle into a draw buffer
+ *   - use a static voice, where the wave_cycle_length has the desired width
+ * - build array of num_harmonics until we reach SRATE/2
+ *   - this will be niter for the fractal
  * - make it polyphonic
- * - support morphing between two points in the fractal over time using an envelope.
+ *   - extract setting to voice object
+ *   - have a simple voice allocation
+ * - support morphing between two points in the fractal
  *   - e.g. left to move start-point, right to move end-point
+ *   - a) over time using an envelope from buzztrax
+ *   - b) using 2 lfos for x/y
+ * - add a volume envelope (from buzztrax)
  */
 
 #include <math.h>
@@ -52,6 +66,7 @@ typedef enum
   CENTER_MODE_AVERAGE     // Average of the values
 } CenterMode;
 
+// fast sine waves
 typedef struct _fastsin
 {
   gdouble si0, si1, fc;
@@ -91,7 +106,7 @@ typedef struct _AppData
   // osc for additive synth
   gint oct;   // 0...6
   gdouble *wave;
-  // TODO: do per osc
+  // TODO: do per voice
   gint note;  // 0...11
   fsin *fs;
 } AppData;
@@ -264,24 +279,33 @@ static void
 setup_osc (AppData * self)
 {
   gint j;
+  fsin *fs = self->fs;
+
+  for (j = 0; j < self->nfreq; j++) {
+    fs[j].si0 = fs[j].si1 = fs[j].fc = 0.0;
+  }
+
+  if (self->note == -1) {
+    return;
+  }
 
   gdouble frq = midi2frq[self->oct * 12 + self->note];
   // sampling rate is 44100 (SRATE)
   // if freq = 440, cycle_samples = 44100 / 440
   // phase_inc = cycle_samples / 2*PI
   gdouble angle, base =  (2.0 * M_PI) / (((gdouble)SRATE) / frq);
-  fsin *fs = self->fs;
 
   for (j = 0; j < self->nfreq; j++) {
     angle = (j + 1) * base;
     fs[j].si0 = sin(-angle);
-    fs[j].si1 = 0.0;
     fs[j].fc = 2.0 * cos(angle);
 
     // supress aliasing
+    // TODO: set niter per voice instead
     if ((frq * (j + 1)) > (SRATE / 2.0)) {
-      fs[j].si0 = 0.0;
-      fs[j].fc = 0.0;
+      // only happens for higher octaves
+      //printf("only use first %d harmonics\n", j + 1);
+      break;
     }
   }
 }
@@ -301,7 +325,7 @@ static gboolean
 on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
-    const gdouble font_size = 10.0;
+  const gdouble font_size = 10.0;
 
   // blit fractal
   cairo_set_source_surface (cr, self->pix, 0.0, 0.0);
@@ -319,99 +343,105 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
     sprintf (text, "center: %d", self->center_mode);
     cairo_show_right_aligned_text_at (cr, self->w - 5.0, font_size, text);
-    cairo_stroke (cr);
-    sprintf (text, "note: %s%1d", note_names[self->note], self->oct + 1);
+    if (self->note == -1) {
+      sprintf (text, "note: ---");
+    } else {
+      sprintf (text, "note: %s%1d", note_names[self->note], self->oct + 1);
+    }
     cairo_show_right_aligned_text_at (cr, self->w - 5.0, 2 * font_size, text);
+    cairo_stroke (cr);
   }
 
-  // draw overlays
-  if (self->motion) {
-    guint i;
+  // draw overlays once we have data
+  if (self->niter == -1) {
+    return TRUE;
+  }
 
-    process_orbit (self);
+  guint i;
 
-    // orbit plot
-    {
-      GstFFTF64Complex *v = self->v;
-      gdouble x, rx = self->crx, rw = self->w / self->crw;
-      gdouble y, iy = self->ciy, ih = self->h / self->cih;
+  process_orbit (self);
 
-      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-      for (i = 0; i < self->nfreq; i++) {
-        x = (v[i].r - rx) * rw;
-        y = (v[i].i - iy) * ih;
-        //cairo_rectangle (cr, x-0.5,y-0.5,1.0,1.0);
-        cairo_arc (cr, x, y, 1.0, 0.0, 2 * M_PI);
-        cairo_fill (cr);
-      }
-      cairo_set_line_width (cr, 0.5);
-      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.5);
-      x = (v[0].r - rx) * rw;
-      y = (v[0].i - iy) * ih;
-      cairo_move_to (cr, x, y);
-      for (i = 1; i < self->nfreq; i++) {
-        x = (v[i].r - rx) * rw;
-        y = (v[i].i - iy) * ih;
-        cairo_line_to (cr, x, y);
-      }
-      cairo_stroke (cr);
-    }
+  // orbit plot
+  {
+    GstFFTF64Complex *v = self->v;
+    gdouble x, rx = self->crx, rw = self->w / self->crw;
+    gdouble y, iy = self->ciy, ih = self->h / self->cih;
 
-    // waveform (top-left, 0..w/3, 0..h/5)
-    {
-      gdouble hs = self->h / 10.0;
-      gdouble xs = self->w / (3.0 * self->ntime);
-      gdouble *nt = self->nt;
-
-      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
-      cairo_rectangle (cr, 0.0, 0.0, self->w / 3.0, 2 * hs);
+    cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+    for (i = 0; i < self->nfreq; i++) {
+      x = (v[i].r - rx) * rw;
+      y = (v[i].i - iy) * ih;
+      //cairo_rectangle (cr, x-0.5,y-0.5,1.0,1.0);
+      cairo_arc (cr, x, y, 1.0, 0.0, 2 * M_PI);
       cairo_fill (cr);
-
-      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-      cairo_move_to (cr, 3.0, 2 * hs + font_size);
-      cairo_show_text (cr, "waveform");
-      cairo_stroke (cr);
-
-      cairo_move_to (cr, 0.0, hs);
-      for (i = 0; i < self->ntime; i++) {
-        cairo_line_to (cr, i * xs, (nt[i] + 1.0) * hs);
-      }
-      cairo_stroke (cr);
     }
-
-    // spectrogram (bottom-left, 0..w/3, 4*h/5..h)
-    {
-      gdouble h = self->h, hs = h / 5.0, v;
-      gdouble xs = self->w / (3.0 * self->nfreq);
-      GstFFTF64Complex *f = self->f;
-
-      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
-      cairo_rectangle (cr, 0.0, h - hs, self->w / 3.0, hs);
-      cairo_fill (cr);
-
-      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-      cairo_move_to (cr, 3.0, h - (hs + (font_size / 2.0)));
-      cairo_show_text (cr, "spectrogram (magnitude: red, phase: green)");
-      cairo_stroke (cr);
-
-      // magnitude
-      cairo_set_source_rgb (cr, 1.0, 0.3, 0.0);
-      cairo_move_to (cr, 0.0, h);
-      for (i = 0; i < self->nfreq; i++) {
-        v = MIN (f[i].r, 1.0);
-        cairo_line_to (cr, i * xs, h - (v * hs));
-      }
-      cairo_stroke (cr);
-
-      // phase
-      cairo_set_source_rgb (cr, 0.3, 1.0, 0.0);
-      cairo_move_to (cr, 0.0, h);
-      for (i = 0; i < self->nfreq; i++) {
-        v = (M_PI + f[i].i) / (M_PI + M_PI);
-        cairo_line_to (cr, i * xs, h - (v * hs));
-      }
-      cairo_stroke (cr);
+    cairo_set_line_width (cr, 0.5);
+    cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.5);
+    x = (v[0].r - rx) * rw;
+    y = (v[0].i - iy) * ih;
+    cairo_move_to (cr, x, y);
+    for (i = 1; i < self->nfreq; i++) {
+      x = (v[i].r - rx) * rw;
+      y = (v[i].i - iy) * ih;
+      cairo_line_to (cr, x, y);
     }
+    cairo_stroke (cr);
+  }
+
+  // waveform (top-left, 0..w/3, 0..h/5)
+  {
+    gdouble hs = self->h / 10.0;
+    gdouble xs = self->w / (3.0 * self->ntime);
+    gdouble *nt = self->nt;
+
+    cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
+    cairo_rectangle (cr, 0.0, 0.0, self->w / 3.0, 2 * hs);
+    cairo_fill (cr);
+
+    cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+    cairo_move_to (cr, 3.0, 2 * hs + font_size);
+    cairo_show_text (cr, "waveform");
+    cairo_stroke (cr);
+
+    cairo_move_to (cr, 0.0, hs);
+    for (i = 0; i < self->ntime; i++) {
+      cairo_line_to (cr, i * xs, (nt[i] + 1.0) * hs);
+    }
+    cairo_stroke (cr);
+  }
+
+  // spectrogram (bottom-left, 0..w/3, 4*h/5..h)
+  {
+    gdouble h = self->h, hs = h / 5.0, v;
+    gdouble xs = self->w / (3.0 * self->nfreq);
+    GstFFTF64Complex *f = self->f;
+
+    cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
+    cairo_rectangle (cr, 0.0, h - hs, self->w / 3.0, hs);
+    cairo_fill (cr);
+
+    cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+    cairo_move_to (cr, 3.0, h - (hs + (font_size / 2.0)));
+    cairo_show_text (cr, "spectrogram (magnitude: red, phase: green)");
+    cairo_stroke (cr);
+
+    // magnitude
+    cairo_set_source_rgb (cr, 1.0, 0.3, 0.0);
+    cairo_move_to (cr, 0.0, h);
+    for (i = 0; i < self->nfreq; i++) {
+      v = MIN (f[i].r, 1.0);
+      cairo_line_to (cr, i * xs, h - (v * hs));
+    }
+    cairo_stroke (cr);
+
+    // phase
+    cairo_set_source_rgb (cr, 0.3, 1.0, 0.0);
+    cairo_move_to (cr, 0.0, h);
+    for (i = 0; i < self->nfreq; i++) {
+      v = (M_PI + f[i].i) / (M_PI + M_PI);
+      cairo_line_to (cr, i * xs, h - (v * hs));
+    }
+    cairo_stroke (cr);
   }
 
   return TRUE;
@@ -543,6 +573,27 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
           break;
       }
       break;
+    case GDK_KEY_RELEASE:
+      switch (event->key.keyval) {
+        case GDK_KEY_y:
+        case GDK_KEY_z:
+        case GDK_KEY_s:
+        case GDK_KEY_x:
+        case GDK_KEY_d:
+        case GDK_KEY_c:
+        case GDK_KEY_v:
+        case GDK_KEY_g:
+        case GDK_KEY_b:
+        case GDK_KEY_h:
+        case GDK_KEY_n:
+        case GDK_KEY_j:
+        case GDK_KEY_m:
+          update_note (self, -1);
+          break;
+        default:
+          break;
+      }
+      break;
     case GDK_MOTION_NOTIFY:
       if (self->motion) {
         // map event->button.x, event->button.y to cr,ci;
@@ -556,6 +607,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
         gtk_widget_queue_draw (self->window);
 
       }
+      break;
     default:
       break;
   }
@@ -566,7 +618,6 @@ static void
 on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
-  GstBuffer *buf;
   gsize size = sizeof (gdouble) * self->ntime;
 
   if (length != -1 && length < size)
@@ -593,7 +644,7 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
     w[i++] = s;
   }
 
-  buf = gst_buffer_new_wrapped_full (GST_MEMORY_FLAG_READONLY,
+  GstBuffer *buf = gst_buffer_new_wrapped_full (GST_MEMORY_FLAG_READONLY,
       (gpointer) (self->wave), size, 0, size, NULL, NULL);
 
   gst_app_src_push_buffer (GST_APP_SRC (self->src), buf);
@@ -604,6 +655,9 @@ initialize (AppData * self)
 {
   GstElement *conv, *tee, *q1, *q2, *wavenc, *fsink, *asink;
   GstCaps *caps;
+
+  // catch first click, to activate drawing
+  self->niter = -1;
 
   // prepare fft
   self->ntime = gst_fft_next_fast_length (250);
@@ -619,7 +673,7 @@ initialize (AppData * self)
 
   // setup osc
   self->oct = 2;
-  self->note = 0;
+  self->note = -1;
   self->fs = g_new0 (fsin, self->nfreq);
   self->wave = g_new0 (gdouble, self->ntime);
   setup_osc (self);
@@ -636,7 +690,7 @@ initialize (AppData * self)
       G_CALLBACK (on_interaction_event), (gpointer) self);
   gtk_widget_set_size_request (self->window, 600, 450);
   gtk_window_set_title (GTK_WINDOW (self->window),
-      "Mandelbrot synthesizer: press left-button over black set and move (mind your audio volume)");
+      "Mandelbrot synthesizer: press left-button and move, press keys (mind your audio volume)");
   gtk_widget_add_events (self->window,
       GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
       GDK_BUTTON1_MOTION_MASK);
