@@ -343,6 +343,7 @@ on_pointer_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
           nt[i] = t[i] / m;
         }
       }
+      break;
     default:
       break;
   }
@@ -388,7 +389,7 @@ initialize (AppData * self)
 
   // create window and connect to signals
   self->window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
-  g_signal_connect (G_OBJECT (self->window), "destroy", 
+  g_signal_connect (G_OBJECT (self->window), "destroy",
       G_CALLBACK (gtk_main_quit), NULL);
   g_signal_connect (G_OBJECT (self->window), "size-allocate",
       G_CALLBACK (on_size_allocate), (gpointer) self);

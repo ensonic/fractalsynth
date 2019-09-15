@@ -432,6 +432,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
         gtk_widget_queue_draw (self->window);
 
       }
+      break;
     default:
       break;
   }
