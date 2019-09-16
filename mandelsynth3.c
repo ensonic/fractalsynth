@@ -18,9 +18,6 @@
  * before starting this to be able to move the mouse while typing
  */
 /* TODO:
- * - remove ifft
- *   - instead render one cycle into a draw buffer
- *   - use a static voice, where the wave_cycle_length has the desired width
  * - build array of num_harmonics until we reach SRATE/2
  *   - this will be niter for the fractal
  * - make it polyphonic
@@ -30,9 +27,9 @@
  *   - e.g. left to move start-point, right to move end-point
  *   - a) over time using an envelope from buzztrax
  *   - b) using 2 lfos for x/y
- * - add a volume envelope (from buzztrax)
+ *   - c) along some path
  * - x/y or polar coords?
- * -
+ * - turn into vcvrack module to prototype interface and reuse modulators
  */
 
 #include <math.h>
@@ -64,7 +61,7 @@ float midi2frq[]={
 typedef enum
 {
   CENTER_MODE_FIRST = 0,  // No offset compensation
-  CENTER_MODE_LAST,       // Convergence point
+  CENTER_MODE_LAST,       // Convergence point (depends on niter inside the set)
   CENTER_MODE_AVERAGE     // Average of the values
 } CenterMode;
 
@@ -696,7 +693,7 @@ initialize (AppData * self)
   self->niter = -1;
 
   // prepare audio settings
-  self->ntime = 250;
+  self->ntime = SRATE / 100;
   self->nfreq = 100;
   self->v = g_new0 (complexd, self->nfreq);
   self->f = g_new0 (complexd, self->nfreq);
