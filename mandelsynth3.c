@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2019-2019 Stefan Sauer <ensonic@users.sf.net>
  *
- * gcc -Wall -g  mandelsynth3.c -o mandelsynth3 `pkg-config gtk+-3.0 cairo gstreamer-1.0 gstreamer-app-1.0 gstreamer-fft-1.0 --cflags --libs` -lm
+ * gcc -Wall -g  mandelsynth3.c -o mandelsynth3 `pkg-config gtk+-3.0 cairo gstreamer-1.0 gstreamer-app-1.0 --cflags --libs` -lm
  *
  * Usage:
  * - left-mouse down + drag: change the sprectrum
@@ -31,6 +31,8 @@
  *   - a) over time using an envelope from buzztrax
  *   - b) using 2 lfos for x/y
  * - add a volume envelope (from buzztrax)
+ * - x/y or polar coords?
+ * -
  */
 
 #include <math.h>
@@ -72,6 +74,11 @@ typedef struct _fastsin
   gdouble si0, si1, fc;
 } fsin;
 
+typedef struct _complexd {
+  gdouble r;
+  gdouble i;
+} complexd;
+
 typedef struct _AppData
 {
   GtkWidget *window;
@@ -86,18 +93,17 @@ typedef struct _AppData
 
   // track motion?
   gboolean motion;
-  // how to map the orbit to the fft
+  // how to map the orbit to the harmonics
   CenterMode center_mode;
 
   // render buffer
   cairo_surface_t *pix;
 
-  // fft
+  // fractal harmonics settings
   gint ntime, nfreq;
-  GstFFTF64 *ifft;
-  GstFFTF64Complex *v;
-  GstFFTF64Complex *f;
-  gdouble *t, *nt;
+  complexd *v;
+  complexd *f;
+  gdouble *t;
 
   // gstreamer
   GstElement *pipe;
@@ -109,11 +115,15 @@ typedef struct _AppData
   // TODO: do per voice
   gint note;  // 0...11
   fsin *fs;
+
+  // osc for spectral display
+  gdouble *nt;
+  fsin *fsd;
 } AppData;
 static AppData app = { 0, };
 
 static guint
-do_mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, GstFFTF64Complex * v)
+do_mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, complexd * v)
 {
   // z = z² + c
   gdouble zr = cr, zi = ci, zt;
@@ -210,14 +220,14 @@ static void
 process_orbit (AppData *self)
 {
   gdouble cr = self->cr, ci = self->ci;
-  GstFFTF64Complex *v = self->v;
-  GstFFTF64Complex *f = self->f;
-  gdouble *t = self->t;
+  complexd *v = self->v;
+  complexd *f = self->f;
   gdouble *nt = self->nt;
   gdouble tr, ti;
   gdouble m = 0.0;
   gdouble mir, mar, mii, mai;
-  gint i, niter = self->niter;
+  gint i,j;
+  gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
 
   switch (self->center_mode) {
     case CENTER_MODE_FIRST:
@@ -260,18 +270,57 @@ process_orbit (AppData *self)
        f[i].i = ti;
      */
   }
-  for (i = niter; i < self->nfreq; i++) {
+  for (i = niter; i < nfreq; i++) {
     f[i].r = f[i].i = 0.0;
   }
-  // do iFFT of the data
-  gst_fft_f64_inverse_fft (self->ifft, f, t);
-  // normalize
-  for (i = 0; i < self->ntime; i++) {
-    if (fabs (t[i]) > m)
-      m = fabs (t[i]);
+
+  fsin *fs = self->fsd;
+  gdouble s;
+  for (i = 0; i < ntime;) {
+    s = 0.0;
+    for (j = 0; j < nfreq; j++) {
+      fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
+      s += fs[j].si0 * f[j].r;
+    }
+    nt[i++] = s;
+    if (fabs (s) > m)
+      m = fabs (s);
+
+    s = 0.0;
+    for (j = 0; j < nfreq; j++) {
+      fs[j].si1 = fs[j].fc * fs[j].si0 - fs[j].si1;
+      s += fs[j].si1 * f[j].r;
+    }
+    nt[i++] = s;
+    if (fabs (s) > m)
+      m = fabs (s);
   }
-  for (i = 0; i < self->ntime; i++) {
-    nt[i] = t[i] / m;
+  for (i = 0; i < ntime; i++) {
+    nt[i] = nt[i] / m;
+  }
+}
+
+// audio processing helpers
+
+static void
+init_fsin (fsin *fs, gdouble cycle_length, gdouble frq, gint nfreq)
+{
+ // phase_inc = 2*PI / cycle_samples
+  gdouble angle, base =  (2.0 * M_PI) / cycle_length;
+  gint j;
+
+  for (j = 0; j < nfreq; j++) {
+    angle = (j + 1) * base;
+    fs[j].si0 = sin(-angle);
+    fs[j].fc = 2.0 * cos(angle);
+
+    // supress aliasing
+    // TODO: set niter per voice instead
+    if ((frq * (j + 1)) > (SRATE / 2.0)) {
+      // only happens for higher octaves
+      //printf("only use first %d harmonics\n", j + 1);
+      break;
+    }
   }
 }
 
@@ -292,23 +341,10 @@ setup_osc (AppData * self)
   gdouble frq = midi2frq[self->oct * 12 + self->note];
   // sampling rate is 44100 (SRATE)
   // if freq = 440, cycle_samples = 44100 / 440
-  // phase_inc = cycle_samples / 2*PI
-  gdouble angle, base =  (2.0 * M_PI) / (((gdouble)SRATE) / frq);
-
-  for (j = 0; j < self->nfreq; j++) {
-    angle = (j + 1) * base;
-    fs[j].si0 = sin(-angle);
-    fs[j].fc = 2.0 * cos(angle);
-
-    // supress aliasing
-    // TODO: set niter per voice instead
-    if ((frq * (j + 1)) > (SRATE / 2.0)) {
-      // only happens for higher octaves
-      //printf("only use first %d harmonics\n", j + 1);
-      break;
-    }
-  }
+  init_fsin (fs, ((gdouble)SRATE) / frq, frq, self->nfreq);
 }
+
+// gfx helpers
 
 static void
 cairo_show_right_aligned_text_at (cairo_t * cr, gdouble x, gdouble y,
@@ -363,7 +399,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 
   // orbit plot
   {
-    GstFFTF64Complex *v = self->v;
+    complexd *v = self->v;
     gdouble x, rx = self->crx, rw = self->w / self->crw;
     gdouble y, iy = self->ciy, ih = self->h / self->cih;
 
@@ -414,7 +450,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
   {
     gdouble h = self->h, hs = h / 5.0, v;
     gdouble xs = self->w / (3.0 * self->nfreq);
-    GstFFTF64Complex *f = self->f;
+    complexd *f = self->f;
 
     cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
     cairo_rectangle (cr, 0.0, h - hs, self->w / 3.0, hs);
@@ -623,12 +659,12 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
   if (length != -1 && length < size)
     return;
 
-  gint nfreq = self->nfreq;
+  gint nfreq = self->nfreq, ntime = self->ntime;
   gint i,j;
   fsin *fs = self->fs;
   gdouble s, *w = self->wave;
-  GstFFTF64Complex *f = self->f;
-  for (i = 0; i < self->ntime;) {
+  complexd *f = self->f;
+  for (i = 0; i < ntime;) {
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
       fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
@@ -659,16 +695,15 @@ initialize (AppData * self)
   // catch first click, to activate drawing
   self->niter = -1;
 
-  // prepare fft
-  self->ntime = gst_fft_next_fast_length (250);
-  self->nfreq = self->ntime / 2 + 1;
-  self->ifft = gst_fft_f64_new (self->ntime, TRUE);
-  self->v = g_new0 (GstFFTF64Complex, self->nfreq);
-  self->f = g_new0 (GstFFTF64Complex, self->nfreq);
+  // prepare audio settings
+  self->ntime = 250;
+  self->nfreq = 100;
+  self->v = g_new0 (complexd, self->nfreq);
+  self->f = g_new0 (complexd, self->nfreq);
   self->t = g_new0 (gdouble, self->ntime);
   self->nt = g_new0 (gdouble, self->ntime);
 
-  printf ("Using a FFT with %d bands, generating audio-chunks of %d samples\n",
+  printf ("Using max %d harmonics, generating audio-chunks of %d samples\n",
       self->nfreq, self->ntime);
 
   // setup osc
@@ -676,7 +711,10 @@ initialize (AppData * self)
   self->note = -1;
   self->fs = g_new0 (fsin, self->nfreq);
   self->wave = g_new0 (gdouble, self->ntime);
-  setup_osc (self);
+
+  // spectral display
+  self->fsd = g_new0 (fsin, self->nfreq);
+  init_fsin (self->fsd, self->ntime, 1.0, self->nfreq);
 
   // create window and connect to signals
   self->window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
@@ -738,8 +776,6 @@ finalize (AppData * self)
     g_object_unref (self->pipe);
   }
 
-  if (self->ifft)
-    gst_fft_f64_free (self->ifft);
   g_free (self->v);
   g_free (self->f);
   g_free (self->t);
@@ -747,6 +783,8 @@ finalize (AppData * self)
 
   g_free (self->fs);
   g_free (self->wave);
+
+  g_free (self->fsd);
 
   if (self->pix)
     cairo_surface_destroy (self->pix);
