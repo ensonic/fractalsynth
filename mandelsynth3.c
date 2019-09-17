@@ -29,7 +29,15 @@
  *   - b) using 2 lfos for x/y
  *   - c) along some path
  * - x/y or polar coords?
+ * - try initializing the phase of the osc from the fractal values
+ * - try slightly detuning the harmonics
+ *
  * - turn into vcvrack module to prototype interface and reuse modulators
+ *   - have 2 osc per voice
+ *   - each osc has {x1,x,x2},{y1,y,y2} that can be modulated
+ *     - x1, x2 set the range, the x target is 0...100 and picks a spectrum in
+ *      the range, likewise for y
+ *   - offer various combine modes for the oscs (mix, am, fm, ...)
  */
 
 #include <math.h>
@@ -98,9 +106,8 @@ typedef struct _AppData
 
   // fractal harmonics settings
   gint ntime, nfreq;
-  complexd *v;
-  complexd *f;
-  gdouble *t;
+  complexd *v;  // complext orbit path
+  complexd *f;  // magnitude and phase
 
   // gstreamer
   GstElement *pipe;
@@ -113,8 +120,8 @@ typedef struct _AppData
   gint note;  // 0...11
   fsin *fs;
 
-  // osc for spectral display
-  gdouble *nt;
+  // osc for harmonics display
+  gdouble *waved;
   fsin *fsd;
 } AppData;
 static AppData app = { 0, };
@@ -219,9 +226,7 @@ process_orbit (AppData *self)
   gdouble cr = self->cr, ci = self->ci;
   complexd *v = self->v;
   complexd *f = self->f;
-  gdouble *nt = self->nt;
   gdouble tr, ti;
-  gdouble m = 0.0;
   gdouble mir, mar, mii, mai;
   gint i,j;
   gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
@@ -272,14 +277,15 @@ process_orbit (AppData *self)
   }
 
   fsin *fs = self->fsd;
-  gdouble s;
+  gdouble *w = self->waved;
+  gdouble s, m = 0.0;
   for (i = 0; i < ntime;) {
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
       fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
       s += fs[j].si0 * f[j].r;
     }
-    nt[i++] = s;
+    w[i++] = s;
     if (fabs (s) > m)
       m = fabs (s);
 
@@ -288,12 +294,12 @@ process_orbit (AppData *self)
       fs[j].si1 = fs[j].fc * fs[j].si0 - fs[j].si1;
       s += fs[j].si1 * f[j].r;
     }
-    nt[i++] = s;
+    w[i++] = s;
     if (fabs (s) > m)
       m = fabs (s);
   }
   for (i = 0; i < ntime; i++) {
-    nt[i] = nt[i] / m;
+    w[i] = w[i] / m;
   }
 }
 
@@ -425,7 +431,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
   {
     gdouble hs = self->h / 10.0;
     gdouble xs = self->w / (3.0 * self->ntime);
-    gdouble *nt = self->nt;
+    gdouble *nt = self->waved;
 
     cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
     cairo_rectangle (cr, 0.0, 0.0, self->w / 3.0, 2 * hs);
@@ -653,6 +659,7 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
   AppData *self = (AppData *) user_data;
   gsize size = sizeof (gdouble) * self->ntime;
 
+  // length =  4096, size =  3528
   if (length != -1 && length < size)
     return;
 
@@ -693,12 +700,10 @@ initialize (AppData * self)
   self->niter = -1;
 
   // prepare audio settings
-  self->ntime = SRATE / 100;
+  self->ntime = 512;
   self->nfreq = 100;
   self->v = g_new0 (complexd, self->nfreq);
   self->f = g_new0 (complexd, self->nfreq);
-  self->t = g_new0 (gdouble, self->ntime);
-  self->nt = g_new0 (gdouble, self->ntime);
 
   printf ("Using max %d harmonics, generating audio-chunks of %d samples\n",
       self->nfreq, self->ntime);
@@ -711,6 +716,7 @@ initialize (AppData * self)
 
   // spectral display
   self->fsd = g_new0 (fsin, self->nfreq);
+  self->waved = g_new0 (gdouble, self->ntime);
   init_fsin (self->fsd, self->ntime, 1.0, self->nfreq);
 
   // create window and connect to signals
@@ -775,13 +781,12 @@ finalize (AppData * self)
 
   g_free (self->v);
   g_free (self->f);
-  g_free (self->t);
-  g_free (self->nt);
 
   g_free (self->fs);
   g_free (self->wave);
 
   g_free (self->fsd);
+  g_free (self->waved);
 
   if (self->pix)
     cairo_surface_destroy (self->pix);
