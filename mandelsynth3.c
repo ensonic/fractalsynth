@@ -65,6 +65,8 @@ float midi2frq[]={
   2093.004,  2217.461,  2349.318,  2489.016,  2637.021,  2793.826,  2959.955,  3135.964,  3322.437,  3520.000,  3729.309,  3951.067,
 };
 
+gint nharnmonics[G_N_ELEMENTS(midi2frq)];
+
 // Which offset we subtract from the sequence of complex numbers
 typedef enum
 {
@@ -306,7 +308,7 @@ process_orbit (AppData *self)
 // audio processing helpers
 
 static void
-init_fsin (fsin *fs, gdouble cycle_length, gdouble frq, gint nfreq)
+init_fsin (fsin *fs, gdouble cycle_length, gint nfreq)
 {
  // phase_inc = 2*PI / cycle_samples
   gdouble angle, base =  (2.0 * M_PI) / cycle_length;
@@ -316,14 +318,6 @@ init_fsin (fsin *fs, gdouble cycle_length, gdouble frq, gint nfreq)
     angle = (j + 1) * base;
     fs[j].si0 = sin(-angle);
     fs[j].fc = 2.0 * cos(angle);
-
-    // supress aliasing
-    // TODO: set niter per voice instead
-    if ((frq * (j + 1)) > (SRATE / 2.0)) {
-      // only happens for higher octaves
-      //printf("only use first %d harmonics\n", j + 1);
-      break;
-    }
   }
 }
 
@@ -341,10 +335,26 @@ setup_osc (AppData * self)
     return;
   }
 
-  gdouble frq = midi2frq[self->oct * 12 + self->note];
+  gint note = self->oct * 12 + self->note;
+  gdouble frq = midi2frq[note];
   // sampling rate is 44100 (SRATE)
   // if freq = 440, cycle_samples = 44100 / 440
-  init_fsin (fs, ((gdouble)SRATE) / frq, frq, self->nfreq);
+  init_fsin (fs, ((gdouble)SRATE) / frq, MIN(self->nfreq, nharnmonics[note]));
+}
+
+static void
+setup_harmonics ()
+{
+  gint i,j;
+  gdouble frq, nyq = (SRATE / 2.0);
+
+  // compute how many harmonics we can add without aliasing
+  for (i = 0; i < G_N_ELEMENTS(midi2frq); i++) {
+    frq = midi2frq[i];
+    for (j = 1; (j * frq) < nyq; j++) { }
+    nharnmonics[i] = j;
+    //printf("%3d, %6lf, %3d\n", i, frq, j);
+  }
 }
 
 // gfx helpers
@@ -713,11 +723,12 @@ initialize (AppData * self)
   self->note = -1;
   self->fs = g_new0 (fsin, self->nfreq);
   self->wave = g_new0 (gdouble, self->ntime);
+  setup_harmonics ();
 
   // spectral display
   self->fsd = g_new0 (fsin, self->nfreq);
   self->waved = g_new0 (gdouble, self->ntime);
-  init_fsin (self->fsd, self->ntime, 1.0, self->nfreq);
+  init_fsin (self->fsd, self->ntime, self->nfreq);
 
   // create window and connect to signals
   self->window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
