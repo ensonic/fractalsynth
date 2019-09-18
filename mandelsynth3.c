@@ -18,8 +18,6 @@
  * before starting this to be able to move the mouse while typing
  */
 /* TODO:
- * - build array of num_harmonics until we reach SRATE/2
- *   - this will be niter for the fractal
  * - make it polyphonic
  *   - extract setting to voice object
  *   - have a simple voice allocation
@@ -30,6 +28,7 @@
  *   - c) along some path
  * - x/y or polar coords?
  * - try initializing the phase of the osc from the fractal values
+ *   - phase goes from -pi to pi
  * - try slightly detuning the harmonics
  *
  * - turn into vcvrack module to prototype interface and reuse modulators
@@ -375,6 +374,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
   const gdouble font_size = 10.0;
+  gint nfreq = self->nfreq, ntime = self->ntime;
 
   // blit fractal
   cairo_set_source_surface (cr, self->pix, 0.0, 0.0);
@@ -417,7 +417,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     gdouble y, iy = self->ciy, ih = self->h / self->cih;
 
     cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-    for (i = 0; i < self->nfreq; i++) {
+    for (i = 0; i < nfreq; i++) {
       x = (v[i].r - rx) * rw;
       y = (v[i].i - iy) * ih;
       //cairo_rectangle (cr, x-0.5,y-0.5,1.0,1.0);
@@ -429,7 +429,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     x = (v[0].r - rx) * rw;
     y = (v[0].i - iy) * ih;
     cairo_move_to (cr, x, y);
-    for (i = 1; i < self->nfreq; i++) {
+    for (i = 1; i < nfreq; i++) {
       x = (v[i].r - rx) * rw;
       y = (v[i].i - iy) * ih;
       cairo_line_to (cr, x, y);
@@ -440,7 +440,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
   // waveform (top-left, 0..w/3, 0..h/5)
   {
     gdouble hs = self->h / 10.0;
-    gdouble xs = self->w / (3.0 * self->ntime);
+    gdouble xs = self->w / (3.0 * ntime);
     gdouble *nt = self->waved;
 
     cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
@@ -453,7 +453,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     cairo_stroke (cr);
 
     cairo_move_to (cr, 0.0, hs);
-    for (i = 0; i < self->ntime; i++) {
+    for (i = 0; i < ntime; i++) {
       cairo_line_to (cr, i * xs, (nt[i] + 1.0) * hs);
     }
     cairo_stroke (cr);
@@ -462,7 +462,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
   // spectrogram (bottom-left, 0..w/3, 4*h/5..h)
   {
     gdouble h = self->h, hs = h / 5.0, v;
-    gdouble xs = self->w / (3.0 * self->nfreq);
+    gdouble xs = self->w / (3.0 * nfreq);
     complexd *f = self->f;
 
     cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.15);
@@ -477,7 +477,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     // magnitude
     cairo_set_source_rgb (cr, 1.0, 0.3, 0.0);
     cairo_move_to (cr, 0.0, h);
-    for (i = 0; i < self->nfreq; i++) {
+    for (i = 0; i < nfreq; i++) {
       v = MIN (f[i].r, 1.0);
       cairo_line_to (cr, i * xs, h - (v * hs));
     }
@@ -486,7 +486,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     // phase
     cairo_set_source_rgb (cr, 0.3, 1.0, 0.0);
     cairo_move_to (cr, 0.0, h);
-    for (i = 0; i < self->nfreq; i++) {
+    for (i = 0; i < nfreq; i++) {
       v = (M_PI + f[i].i) / (M_PI + M_PI);
       cairo_line_to (cr, i * xs, h - (v * hs));
     }
@@ -710,8 +710,8 @@ initialize (AppData * self)
   self->niter = -1;
 
   // prepare audio settings
-  self->ntime = 512;
-  self->nfreq = 100;
+  self->ntime = 512;  // sample-fragments
+  self->nfreq = 100;  // max number of harmonics to use
   self->v = g_new0 (complexd, self->nfreq);
   self->f = g_new0 (complexd, self->nfreq);
 
