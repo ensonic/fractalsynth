@@ -36,10 +36,6 @@
  * - try various harrmonic series:
  *   - multiple: f, 2f, 3f, 4f, ...
  *   - fibonaci: f, 2f, 3f, 5f, 8f, ...
- * - add a harmonics decay
- *   - as soon as the sequence oscillates between multiple states we don't get
- *     a decaying spectrum which sounds unnatural
- *   - we can add a linear (1-(h/n)) or exponetion (1/h)
  *
  * - turn into vcvrack module to prototype interface and reuse modulators
  *   - have 2 osc per voice
@@ -50,6 +46,8 @@
  */
 /* DONE:
  * - using a multiplier for harmonics
+ * - harmonics decay:
+ *   - linear decay is almost not noticable
  */
 
 #include <math.h>
@@ -82,12 +80,10 @@ static float midi2frq[]={
 static gint nharnmonics[G_N_ELEMENTS(midi2frq)];
 
 // Which offset we subtract from the sequence of complex numbers
-typedef enum
-{
+typedef enum {
   CENTER_MODE_FIRST = 0,  // No offset compensation
   CENTER_MODE_LAST,       // Convergence point (depends on niter inside the set)
   CENTER_MODE_AVERAGE,    // Average of the values
-  _CENTER_MODES
 } CenterMode;
 
 const gchar* center_mode_str[] = { "first", "last", "avg"};
@@ -97,28 +93,44 @@ const gchar* center_mode_str[] = { "first", "last", "avg"};
 #define UI_PANNEL_W 120
 #define FONT_SIZE 10.0
 
-typedef struct _uiparam
-{
+typedef struct _uiparam {
   gdouble min, max, value;
   gchar *label;
   char value_desc[20];
 } UiParam;
 
+enum {
+  UIP_CENTER_MODE = 0,
+  UIP_OCT,
+  UIP_HARMONICS_DECAY,
+  _UIPS
+};
+
 static UiParam ui_par[] = {
-  { // self->center_mode
-    0.0, _CENTER_MODES, CENTER_MODE_FIRST,
+  {
+    0.0, CENTER_MODE_AVERAGE, CENTER_MODE_FIRST,
     "center mode", { '\0', }
   },
-  { // self->oct
+  {
     0.0, 6.0, 2.0,
     "octave", { '\0', }
   },
+  /* harmonics decay:
+   * - as soon as the sequence oscillates between multiple states we don't get
+   *   a decaying spectrum which sounds unnatural
+   */
+  {
+    0.0, 1.0, 0.0,
+    "harm. decay", { '\0', }
+  },
 };
 
+#define UIV_CENTER_MODE ((gint)(ui_par[UIP_CENTER_MODE].value))
+#define UIV_OCT ((gint)(ui_par[UIP_OCT].value))
+#define UIV_HARMONICS_DECAY (ui_par[UIP_HARMONICS_DECAY].value)
 
 // fast sine waves
-typedef struct _fastsin
-{
+typedef struct _fastsin {
   gdouble si0, si1, fc;
 } fsin;
 
@@ -127,8 +139,7 @@ typedef struct _complexd {
   gdouble i;
 } complexd;
 
-typedef struct _AppData
-{
+typedef struct _AppData {
   GtkWidget *window;
   guint w, h, y, h2, ww;
   // rendering idle handler
@@ -141,8 +152,6 @@ typedef struct _AppData
 
   // track motion?
   gboolean motion;
-  // how to map the orbit to the harmonics
-  CenterMode center_mode;
 
   // render buffer
   cairo_surface_t *pix;
@@ -157,7 +166,6 @@ typedef struct _AppData
   GstElement *src;
 
   // osc for additive synth
-  gint oct;   // 0...6
   gdouble *wave;
   // TODO: do per voice
   gint note;  // 0...11
@@ -274,7 +282,7 @@ process_orbit (AppData *self)
   gint i,j;
   gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
 
-  switch (self->center_mode) {
+  switch (UIV_CENTER_MODE) {
     case CENTER_MODE_FIRST:
       // do nothing = center on starting point
       break;
@@ -377,7 +385,7 @@ setup_osc (AppData * self)
     return;
   }
 
-  gint note = self->oct * 12 + self->note;
+  gint note = UIV_OCT * 12 + self->note;
   gdouble frq = midi2frq[note];
   // sampling rate is 44100 (SRATE)
   // if freq = 440, cycle_samples = 44100 / 440
@@ -436,7 +444,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     if (self->note == -1) {
       sprintf (text, "note: ---");
     } else {
-      sprintf (text, "note: %s%1d", note_names[self->note], self->oct + 1);
+      sprintf (text, "note: %s%1d", note_names[self->note], UIV_OCT + 1);
     }
     cairo_show_right_aligned_text_at (cr, self->w - 5.0, FONT_SIZE, text);
   }
@@ -622,19 +630,28 @@ update_note (AppData *self, gint note) {
 }
 
 static void
-update_ui_param_desc (AppData *self, gint p_ix) {
+update_ui_param (AppData *self, gint p_ix) {
   UiParam *p = &ui_par[p_ix];
   gint v = (gint)(p->value);
 
   switch (p_ix) {
-    case 0:
+    case UIP_CENTER_MODE:
       sprintf(p->value_desc, "%s", center_mode_str[v]);
-      self->center_mode = v;
       break;
-    case 1:
+    case UIP_OCT:
       sprintf(p->value_desc, "%1d", (v + 1));
-      self->oct = v;
       setup_osc (self);
+      break;
+    case UIP_HARMONICS_DECAY:
+      sprintf(p->value_desc, "%6.4lf", p->value);
+      /*{
+        gint j, nfreq = self->nfreq;
+        gdouble hd, hdf = UIV_HARMONICS_DECAY;
+        for (j = 0; j < nfreq; j+=10) {
+          hd = 1.0 - hdf * ((gdouble)j / (gdouble)nfreq);
+          printf("%3d: %6.4lf\n", j, hd);
+        }
+      }*/
       break;
     default:
       break;
@@ -670,9 +687,9 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
               // compute new value
               gint lx1 = self->w + 5, lx2 = self->ww - 5, lxw = lx2 - lx1;
               gdouble rel = (event->button.x - lx1) / lxw;
-              rel = CLAMP(rel, 0.0, 0.9999);
+              rel = CLAMP(rel, 0.0, 1.0);
               p->value = p->min + rel * (p->max - p->min);
-              update_ui_param_desc (self, p_ix);
+              update_ui_param (self, p_ix);
               gtk_widget_queue_draw (self->window);
             }
           }
@@ -682,28 +699,30 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
     case GDK_KEY_PRESS:
       switch (event->key.keyval) {
         case GDK_KEY_1:
-          if (self->center_mode > 0) {
-            self->center_mode--;
+          if (UIV_CENTER_MODE > 0) {
+            ui_par[UIP_CENTER_MODE].value = UIV_CENTER_MODE - 1;
+            update_ui_param (self, UIP_CENTER_MODE);
             gtk_widget_queue_draw (self->window);
           }
           break;
         case GDK_KEY_2:
-          if (self->center_mode < CENTER_MODE_AVERAGE) {
-            self->center_mode++;
+          if (UIV_CENTER_MODE < CENTER_MODE_AVERAGE) {
+            ui_par[UIP_CENTER_MODE].value = UIV_CENTER_MODE + 1;
+            update_ui_param (self, UIP_CENTER_MODE);
             gtk_widget_queue_draw (self->window);
           }
           break;
         case GDK_KEY_3:
-          if (self->oct > 0) {
-            self->oct--;
-            setup_osc (self);
+          if (UIV_OCT > 0) {
+            ui_par[UIP_OCT].value = UIV_OCT - 1;
+            update_ui_param (self, UIP_OCT);
             gtk_widget_queue_draw (self->window);
           }
           break;
         case GDK_KEY_4:
-          if (self->oct < 6) {
-            self->oct++;
-            setup_osc (self);
+          if (UIV_OCT < 6) {
+            ui_par[UIP_OCT].value = UIV_OCT + 1;
+            update_ui_param (self, UIP_OCT);
             gtk_widget_queue_draw (self->window);
           }
           break;
@@ -803,19 +822,23 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
   gint i,j;
   fsin *fs = self->fs;
   gdouble s, *w = self->wave;
+  // TODO: pre-calc curve
+  gdouble hd, hdf = 0.0001 + UIV_HARMONICS_DECAY;
   complexd *f = self->f;
   for (i = 0; i < ntime;) {
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
+      hd = 1.0 / (hdf * (j + 1));
       fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
-      s += fs[j].si0 * f[j].r;
+      s += fs[j].si0 * f[j].r * hd;
     }
     w[i++] = s;
 
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
+      hd = 1.0 / (hdf *  (j + 1));
       fs[j].si1 = fs[j].fc * fs[j].si0 - fs[j].si1;
-      s += fs[j].si1 * f[j].r;
+      s += fs[j].si1 * f[j].r * hd;
     }
     w[i++] = s;
   }
@@ -845,7 +868,6 @@ initialize (AppData * self)
       self->nfreq, self->ntime);
 
   // setup osc
-  self->oct = 2;
   self->note = -1;
   self->fs = g_new0 (fsin, self->nfreq);
   self->wave = g_new0 (gdouble, self->ntime);
@@ -855,7 +877,7 @@ initialize (AppData * self)
   {
     gint i;
     for (i = 0; i < G_N_ELEMENTS(ui_par); i++) {
-      update_ui_param_desc (self, i);
+      update_ui_param (self, i);
     }
   }
 
