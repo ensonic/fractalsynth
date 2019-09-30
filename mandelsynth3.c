@@ -29,7 +29,17 @@
  * - x/y or polar coords?
  * - try initializing the phase of the osc from the fractal values
  *   - phase goes from -pi to pi
+ *   - challenge: how to avoid having to call init_fsin() each time we have new
+ *     fractal harmonics
+ *     - maybe only apply then when we start a note (for now)
  * - try slightly detuning the harmonics
+ * - try various harrmonic series:
+ *   - multiple: f, 2f, 3f, 4f, ...
+ *   - fibonaci: f, 2f, 3f, 5f, 8f, ...
+ * - add a harmonics decay
+ *   - as soon as the sequence oscillates between multiple states we don't get
+ *     a decaying spectrum which sounds unnatural
+ *   - we can add a linear (1-(h/n)) or exponetion (1/h)
  *
  * - turn into vcvrack module to prototype interface and reuse modulators
  *   - have 2 osc per voice
@@ -37,6 +47,9 @@
  *     - x1, x2 set the range, the x target is 0...100 and picks a spectrum in
  *      the range, likewise for y
  *   - offer various combine modes for the oscs (mix, am, fm, ...)
+ */
+/* DONE:
+ * - using a multiplier for harmonics
  */
 
 #include <math.h>
@@ -51,10 +64,12 @@
 #include <gst/audio/audio.h>
 #include <gst/fft/gstfftf64.h>
 
+// Synth params
+
 #define SRATE 44100
 
 // generated with midi2frq (octaves 1-7)
-float midi2frq[]={
+static float midi2frq[]={
     32.703,    34.648,    36.708,    38.891,    41.203,    43.654,    46.249,    48.999,    51.913,    55.000,    58.270,    61.735,
     65.406,    69.296,    73.416,    77.782,    82.407,    87.307,    92.499,    97.999,   103.826,   110.000,   116.541,   123.471,
    130.813,   138.591,   146.832,   155.563,   164.814,   174.614,   184.997,   195.998,   207.652,   220.000,   233.082,   246.942,
@@ -64,15 +79,42 @@ float midi2frq[]={
   2093.004,  2217.461,  2349.318,  2489.016,  2637.021,  2793.826,  2959.955,  3135.964,  3322.437,  3520.000,  3729.309,  3951.067,
 };
 
-gint nharnmonics[G_N_ELEMENTS(midi2frq)];
+static gint nharnmonics[G_N_ELEMENTS(midi2frq)];
 
 // Which offset we subtract from the sequence of complex numbers
 typedef enum
 {
   CENTER_MODE_FIRST = 0,  // No offset compensation
   CENTER_MODE_LAST,       // Convergence point (depends on niter inside the set)
-  CENTER_MODE_AVERAGE     // Average of the values
+  CENTER_MODE_AVERAGE,    // Average of the values
+  _CENTER_MODES
 } CenterMode;
+
+const gchar* center_mode_str[] = { "first", "last", "avg"};
+
+// UI
+
+#define UI_PANNEL_W 120
+#define FONT_SIZE 10.0
+
+typedef struct _uiparam
+{
+  gdouble min, max, value;
+  gchar *label;
+  char value_desc[20];
+} UiParam;
+
+static UiParam ui_par[] = {
+  { // self->center_mode
+    0.0, _CENTER_MODES, CENTER_MODE_FIRST,
+    "center mode", { '\0', }
+  },
+  { // self->oct
+    0.0, 6.0, 2.0,
+    "octave", { '\0', }
+  },
+};
+
 
 // fast sine waves
 typedef struct _fastsin
@@ -88,7 +130,7 @@ typedef struct _complexd {
 typedef struct _AppData
 {
   GtkWidget *window;
-  guint w, h, y, h2;
+  guint w, h, y, h2, ww;
   // rendering idle handler
   guint render_id;
   // complex plane
@@ -107,7 +149,7 @@ typedef struct _AppData
 
   // fractal harmonics settings
   gint ntime, nfreq;
-  complexd *v;  // complext orbit path
+  complexd *v;  // complex orbit path
   complexd *f;  // magnitude and phase
 
   // gstreamer
@@ -315,7 +357,8 @@ init_fsin (fsin *fs, gdouble cycle_length, gint nfreq)
 
   for (j = 0; j < nfreq; j++) {
     angle = (j + 1) * base;
-    fs[j].si0 = sin(-angle);
+    fs[j].si0 = sin(-angle); // previous phase
+    //fs[j].si1 = sin(0);    // start phase
     fs[j].fc = 2.0 * cos(angle);
   }
 }
@@ -373,14 +416,14 @@ static gboolean
 on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
-  const gdouble font_size = 10.0;
-  gint nfreq = self->nfreq, ntime = self->ntime;
+  const gdouble font_size_h = FONT_SIZE / 2.0;
+  const gint nfreq = self->nfreq, ntime = self->ntime;
 
   // blit fractal
   cairo_set_source_surface (cr, self->pix, 0.0, 0.0);
   cairo_paint (cr);
 
-  cairo_set_font_size (cr, font_size);
+  cairo_set_font_size (cr, FONT_SIZE);
 
   // settings
   {
@@ -390,15 +433,55 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     };
 
     cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-    sprintf (text, "center: %d", self->center_mode);
-    cairo_show_right_aligned_text_at (cr, self->w - 5.0, font_size, text);
     if (self->note == -1) {
       sprintf (text, "note: ---");
     } else {
       sprintf (text, "note: %s%1d", note_names[self->note], self->oct + 1);
     }
-    cairo_show_right_aligned_text_at (cr, self->w - 5.0, 2 * font_size, text);
-    cairo_stroke (cr);
+    cairo_show_right_aligned_text_at (cr, self->w - 5.0, FONT_SIZE, text);
+  }
+
+  // ui sliders
+  {
+    gint i;
+    gint lx1 = self->w + 5, lx2 = self->ww - 5, lxw = lx2 - lx1, lx;
+    gint ly = FONT_SIZE;
+    gdouble rel;
+    UiParam *p;
+
+    for (i = 0; i < G_N_ELEMENTS(ui_par); i++) {
+      p = &ui_par[i];
+      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 1.0);
+      // draw label left-aligned
+      cairo_move_to (cr, lx1, ly);
+      cairo_show_text (cr, p->label);
+      // draw value right-aligned
+      if (p->value_desc[0]) {
+        cairo_show_right_aligned_text_at (cr, lx2, ly,
+            p->value_desc);
+      }
+      ly += FONT_SIZE;
+
+      // draw slider
+      cairo_set_source_rgba (cr, 0.3, 0.3, 0.3, 1.0);
+      cairo_rectangle (cr, lx1, ly, lxw, FONT_SIZE);
+      cairo_fill (cr);
+      rel = (p->value - p->min) / (p->max - p->min);
+      lx = lx1 + (gint)(rel * lxw);
+      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 1.0);
+      cairo_rectangle (cr, lx-1, ly, 3, FONT_SIZE);
+      cairo_fill (cr);
+      ly += 2 * FONT_SIZE;
+
+      // draw separator line (or shadow box around)
+      cairo_set_line_width (cr, 0.5);
+      cairo_set_source_rgba (cr, 0.5, 0.5, 0.5, 1.0);
+      cairo_move_to (cr, lx1, ly - font_size_h);
+      cairo_line_to (cr, lx2, ly - font_size_h);
+      cairo_stroke (cr);
+
+      ly += FONT_SIZE;
+    }
   }
 
   // draw overlays once we have data
@@ -448,7 +531,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     cairo_fill (cr);
 
     cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-    cairo_move_to (cr, 3.0, 2 * hs + font_size);
+    cairo_move_to (cr, 3.0, 2 * hs + FONT_SIZE);
     cairo_show_text (cr, "waveform");
     cairo_stroke (cr);
 
@@ -470,7 +553,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     cairo_fill (cr);
 
     cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-    cairo_move_to (cr, 3.0, h - (hs + (font_size / 2.0)));
+    cairo_move_to (cr, 3.0, h - (hs + font_size_h));
     cairo_show_text (cr, "spectrogram (magnitude: red, phase: green)");
     cairo_stroke (cr);
 
@@ -506,7 +589,8 @@ on_size_allocate (GtkWidget * widget, GtkAllocation * allocation,
   if (self->render_id)
     g_source_remove (self->render_id);
 
-  self->w = allocation->width;
+  self->ww = allocation->width;
+  self->w = allocation->width - UI_PANNEL_W;
   self->h = allocation->height;
   self->h2 = self->h >> 1;
 
@@ -537,6 +621,26 @@ update_note (AppData *self, gint note) {
     gtk_widget_queue_draw (self->window);
 }
 
+static void
+update_ui_param_desc (AppData *self, gint p_ix) {
+  UiParam *p = &ui_par[p_ix];
+  gint v = (gint)(p->value);
+
+  switch (p_ix) {
+    case 0:
+      sprintf(p->value_desc, "%s", center_mode_str[v]);
+      self->center_mode = v;
+      break;
+    case 1:
+      sprintf(p->value_desc, "%1d", (v + 1));
+      self->oct = v;
+      setup_osc (self);
+      break;
+    default:
+      break;
+  }
+}
+
 static gboolean
 on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
 {
@@ -545,12 +649,34 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
   switch (event->type) {
     case GDK_BUTTON_PRESS:
       if (event->button.button == 1) {
-        self->motion = TRUE;
+        if (event->button.x < self->w) {
+          self->motion = TRUE;
+        } else {
+          // TODO: check if over slider
+        }
       }
       break;
     case GDK_BUTTON_RELEASE:
       if (event->button.button == 1) {
-        self->motion = FALSE;
+        if (event->button.x < self->w) {
+          self->motion = FALSE;
+        } else {
+          // TODO: check if over slider
+          gint ly = event->button.y / FONT_SIZE;
+          if ((ly & 0x3) == 2) {
+            gint p_ix = event->button.y / (FONT_SIZE * 4);
+            if (p_ix < G_N_ELEMENTS(ui_par)) {
+              UiParam *p = &ui_par[p_ix];
+              // compute new value
+              gint lx1 = self->w + 5, lx2 = self->ww - 5, lxw = lx2 - lx1;
+              gdouble rel = (event->button.x - lx1) / lxw;
+              rel = CLAMP(rel, 0.0, 0.9999);
+              p->value = p->min + rel * (p->max - p->min);
+              update_ui_param_desc (self, p_ix);
+              gtk_widget_queue_draw (self->window);
+            }
+          }
+        }
       }
       break;
     case GDK_KEY_PRESS:
@@ -644,7 +770,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
       }
       break;
     case GDK_MOTION_NOTIFY:
-      if (self->motion) {
+      if (self->motion && (event->button.x < self->w)) {
         // map event->button.x, event->button.y to cr,ci;
         self->cr = self->crx + event->button.x * self->crs;
         self->ci = self->ciy + event->button.y * self->cis;
@@ -725,6 +851,14 @@ initialize (AppData * self)
   self->wave = g_new0 (gdouble, self->ntime);
   setup_harmonics ();
 
+  // ui params
+  {
+    gint i;
+    for (i = 0; i < G_N_ELEMENTS(ui_par); i++) {
+      update_ui_param_desc (self, i);
+    }
+  }
+
   // spectral display
   self->fsd = g_new0 (fsin, self->nfreq);
   self->waved = g_new0 (gdouble, self->ntime);
@@ -740,7 +874,7 @@ initialize (AppData * self)
       G_CALLBACK (on_draw), (gpointer) self);
   g_signal_connect (G_OBJECT (self->window), "event",
       G_CALLBACK (on_interaction_event), (gpointer) self);
-  gtk_widget_set_size_request (self->window, 600, 450);
+  gtk_widget_set_size_request (self->window, 600 + UI_PANNEL_W, 450);
   gtk_window_set_title (GTK_WINDOW (self->window),
       "Mandelbrot synthesizer: press left-button and move, press keys (mind your audio volume)");
   gtk_widget_add_events (self->window,
