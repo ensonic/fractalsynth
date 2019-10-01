@@ -171,6 +171,9 @@ typedef struct _AppData {
   gint note;  // 0...11
   fsin *fs;
 
+  // harmonic decay
+  gdouble *hd;
+
   // osc for harmonics display
   gdouble *waved;
   fsin *fsd;
@@ -393,7 +396,7 @@ setup_osc (AppData * self)
 }
 
 static void
-setup_harmonics ()
+setup_harmonics (void)
 {
   gint i,j;
   gdouble frq, nyq = (SRATE / 2.0);
@@ -404,6 +407,25 @@ setup_harmonics ()
     for (j = 1; (j * frq) < nyq; j++) { }
     nharnmonics[i] = j;
     //printf("%3d, %6lf, %3d\n", i, frq, j);
+  }
+}
+
+static void
+setup_harmonic_decay (AppData * self)
+{
+  gint j, nfreq = self->nfreq;
+  gdouble *hd = self->hd;
+  // linear
+  //gdouble hdf = UIV_HARMONICS_DECAY;
+  // exponential
+  gdouble hdf = 0.0001 + UIV_HARMONICS_DECAY;
+
+  for (j = 0; j < nfreq; j++) {
+    // linear
+    //hd[j] = 1.0 - hdf * ((gdouble)j / (gdouble)nfreq);
+    // exponential
+    hd[j] = 1.0 / (hdf * (j + 1));
+    //printf("%3d: %6.4lf\n", j, hd[j]);
   }
 }
 
@@ -621,12 +643,12 @@ on_size_allocate (GtkWidget * widget, GtkAllocation * allocation,
 
 static void
 update_note (AppData *self, gint note) {
-    if (self->note == note)
-      return;
+  if (self->note == note)
+    return;
 
-    self->note = note;
-    setup_osc (self);
-    gtk_widget_queue_draw (self->window);
+  self->note = note;
+  setup_osc (self);
+  gtk_widget_queue_draw (self->window);
 }
 
 static void
@@ -644,14 +666,7 @@ update_ui_param (AppData *self, gint p_ix) {
       break;
     case UIP_HARMONICS_DECAY:
       sprintf(p->value_desc, "%6.4lf", p->value);
-      /*{
-        gint j, nfreq = self->nfreq;
-        gdouble hd, hdf = UIV_HARMONICS_DECAY;
-        for (j = 0; j < nfreq; j+=10) {
-          hd = 1.0 - hdf * ((gdouble)j / (gdouble)nfreq);
-          printf("%3d: %6.4lf\n", j, hd);
-        }
-      }*/
+      setup_harmonic_decay (self);
       break;
     default:
       break;
@@ -821,24 +836,20 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
   gint nfreq = self->nfreq, ntime = self->ntime;
   gint i,j;
   fsin *fs = self->fs;
-  gdouble s, *w = self->wave;
-  // TODO: pre-calc curve
-  gdouble hd, hdf = 0.0001 + UIV_HARMONICS_DECAY;
+  gdouble s, *w = self->wave, *hd = self->hd;
   complexd *f = self->f;
   for (i = 0; i < ntime;) {
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
-      hd = 1.0 / (hdf * (j + 1));
       fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
-      s += fs[j].si0 * f[j].r * hd;
+      s += fs[j].si0 * f[j].r * hd[j];
     }
     w[i++] = s;
 
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
-      hd = 1.0 / (hdf *  (j + 1));
       fs[j].si1 = fs[j].fc * fs[j].si0 - fs[j].si1;
-      s += fs[j].si1 * f[j].r * hd;
+      s += fs[j].si1 * f[j].r * hd[j];
     }
     w[i++] = s;
   }
@@ -872,6 +883,9 @@ initialize (AppData * self)
   self->fs = g_new0 (fsin, self->nfreq);
   self->wave = g_new0 (gdouble, self->ntime);
   setup_harmonics ();
+
+  self->hd = g_new0 (gdouble, self->nfreq);
+  setup_harmonic_decay (self);
 
   // ui params
   {
@@ -951,6 +965,8 @@ finalize (AppData * self)
 
   g_free (self->fs);
   g_free (self->wave);
+
+  g_free (self->hd);
 
   g_free (self->fsd);
   g_free (self->waved);
