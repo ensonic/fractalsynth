@@ -4,6 +4,7 @@
  * Copyright (C) 2019-2019 Stefan Sauer <ensonic@users.sf.net>
  *
  * gcc -Wall -g  mandelsynth3.c -o mandelsynth3 `pkg-config gtk+-3.0 cairo gstreamer-1.0 gstreamer-app-1.0 --cflags --libs` -lm
+ * gcc -Wall -O3 mandelsynth3.c -o mandelsynth3 `pkg-config gtk+-3.0 cairo gstreamer-1.0 gstreamer-app-1.0 --cflags --libs` -lm
  *
  * Usage:
  * - left-mouse down + drag: change the sprectrum
@@ -32,19 +33,17 @@
  *   - challenge: how to avoid having to call init_fsin() each time we have new
  *     fractal harmonics
  *     - maybe only apply then when we start a note (for now)
- * - try slightly detuning the harmonics
  * - try various harrmonic series:
- *   - multiple: f, 2f, 3f, 4f, ...
- *   - fibonaci: f, 2f, 3f, 5f, 8f, ...
- *
- * - turn into vcvrack module to prototype interface and reuse modulators
- *   - have 2 osc per voice
- *   - each osc has {x1,x,x2},{y1,y,y2} that can be modulated
- *     - x1, x2 set the range, the x target is 0...100 and picks a spectrum in
- *      the range, likewise for y
- *   - offer various combine modes for the oscs (mix, am, fm, ...)
+ *   - multiple: f, 2f, 3f, 4f, ...     (creates saw-like sounds)
+ *   - multiple odd: f, 3f, 5f, 7f, ... (creates square-like sounds)
+ *   - fibonaci: f, 2f, 3f, 5f, 8f, ... (creates fm-like sounds)
+ * - use multiple osc per voice where we:
+ *   - distribute the voices in the stereo panorama
+ *   - where each voice has a different x/y where the displacement is controlled
+ *     by two modulators in relation to the main voice
  */
 /* DONE:
+ * - using a 2nd voice with sligthly detuned harmonics gives a fatter sound
  * - using a multiplier for harmonics
  * - harmonics decay:
  *   - linear decay is almost not noticable
@@ -289,11 +288,14 @@ process_orbit (AppData *self)
     case CENTER_MODE_FIRST:
       // do nothing = center on starting point
       break;
-    case CENTER_MODE_LAST:
+    case CENTER_MODE_LAST: {
       // center on last value (the converged value in the set)
-      cr = v[niter].r;
-      ci = v[niter].i;
+      // if niter == nfreq, we're in the set
+      guint niter2 = (niter < nfreq) ? niter : (niter-1);
+      cr = v[niter2].r;
+      ci = v[niter2].i;
       break;
+    }
     case CENTER_MODE_AVERAGE:
       // center on average
       mir = mar = v[0].r;
