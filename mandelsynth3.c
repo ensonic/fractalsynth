@@ -87,6 +87,16 @@ typedef enum {
 
 const gchar* center_mode_str[] = { "first", "last", "avg"};
 
+// regions of the mandelbrot set
+static struct reqion {
+  double x1,x2,y1,y2;
+} regions[] = {
+  { -2.0, 0.5, -1.15, 1.15},
+  { -1.0, -0.6, 0.0, 0.4},
+  { -0.75, -0.8, 0.1, 0.15},
+  { -0.774, -0.784, 0.125, 0.135},
+};
+
 // UI
 
 #define UI_PANNEL_W 120
@@ -102,6 +112,7 @@ enum {
   UIP_CENTER_MODE = 0,
   UIP_OCT,
   UIP_HARMONICS_DECAY,
+  UIP_REGION,
   _UIPS
 };
 
@@ -122,11 +133,16 @@ static UiParam ui_par[] = {
     0.0, 1.0, 0.0,
     "harm. decay", { '\0', }
   },
+  {
+    0.0, 3.0, 0.0,
+    "region", { '\0', }
+  },
 };
 
 #define UIV_CENTER_MODE ((gint)(ui_par[UIP_CENTER_MODE].value))
 #define UIV_OCT ((gint)(ui_par[UIP_OCT].value))
 #define UIV_HARMONICS_DECAY (ui_par[UIP_HARMONICS_DECAY].value)
+#define UIV_REGION ((gint)(ui_par[UIP_REGION].value))
 
 // fast sine waves
 typedef struct _fastsin {
@@ -140,7 +156,7 @@ typedef struct _complexd {
 
 typedef struct _AppData {
   GtkWidget *window;
-  guint w, h, y, h2, ww;
+  guint w, h, y, ww;
   // rendering idle handler
   guint render_id;
   // complex plane
@@ -232,43 +248,41 @@ static gboolean
 do_mandelbot_image (gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
-  guint8 *src = cairo_image_surface_get_data (self->pix), *line1, *line2;
+  guint8 *src = cairo_image_surface_get_data (self->pix), *line;
   guint stride = cairo_image_surface_get_stride (self->pix);
-  guint x, w = self->w, y = self->y, h = self->h, h2 = self->h2;
+  guint x, w = self->w, y = self->y, h = self->h;
   guint c;
   gdouble cr = self->crx, crs = self->crs;
   gdouble ci = self->ci;
 
   // fill one line and do y-mirroring
-  line1 = src + (y * stride);
-  line2 = src + (((h - 1) - y) * stride);
+  line = src + (y * stride);
   for (x = 0; x < w; x++) {
     c = do_mandelbrot (cr, ci, 256);
     if (c == 256) {
-      (*line1++) = (*line2++) = 0;
-      (*line1++) = (*line2++) = 0;
-      (*line1++) = (*line2++) = 0;
+      (*line++) = 0;
+      (*line++) = 0;
+      (*line++) = 0;
     } else {
-      (*line1++) = (*line2++) = 64 + (c >> 1);
-      (*line1++) = (*line2++) = c >> 1;
-      (*line1++) = (*line2++) = c;
+      (*line++) = 64 + (c >> 1);
+      (*line++) = c >> 1;
+      (*line++) = c;
     }
-    (*line1++) = (*line2++) = 0;
+    (*line++) = 0;
     cr += crs;
   }
 
   // refresh every 8 lines
   if ((y & 0x7) == 0x7) {
     gtk_widget_queue_draw_area (self->window, 0, y - 7, w, 8);
-    gtk_widget_queue_draw_area (self->window, 0, (h - y), w, 8);
   }
   self->y = ++y;
   self->ci += self->cis;
-  if (y < h2) {
+  if (y < h) {
     return TRUE;
   } else {
     // final refresh
-    gtk_widget_queue_draw_area (self->window, 0, y - 7, w, 16);
+    gtk_widget_queue_draw_area (self->window, 0, y - 7, w, 8);
     return FALSE;
   }
 }
@@ -457,7 +471,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 
   cairo_set_font_size (cr, FONT_SIZE);
 
-  // settings
+  // status info
   {
     gchar text[100];
     gchar *note_names[] = {
@@ -471,6 +485,9 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
       sprintf (text, "note: %s%1d", note_names[self->note], UIV_OCT + 1);
     }
     cairo_show_right_aligned_text_at (cr, self->w - 5.0, FONT_SIZE, text);
+
+    sprintf (text, "%6.4lf, %6.4lf", self->cr, self->ci);
+    cairo_show_right_aligned_text_at (cr, self->w - 5.0, 3 * FONT_SIZE, text);
   }
 
   // ui sliders
@@ -526,11 +543,14 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
   process_orbit (self);
 
   // orbit plot
+  // TODO: this does not work well when zoomin in, the lines will overwrite the
+  // sliders or completely run out of screen
   {
     complexd *v = self->v;
     gdouble x, rx = self->crx, rw = self->w / self->crw;
     gdouble y, iy = self->ciy, ih = self->h / self->cih;
 
+    // dots
     cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
     for (i = 0; i < nfreq; i++) {
       x = (v[i].r - rx) * rw;
@@ -539,6 +559,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
       cairo_arc (cr, x, y, 1.0, 0.0, 2 * M_PI);
       cairo_fill (cr);
     }
+    // and lines
     cairo_set_line_width (cr, 0.5);
     cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.5);
     x = (v[0].r - rx) * rw;
@@ -612,35 +633,50 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 }
 
 static void
-on_size_allocate (GtkWidget * widget, GtkAllocation * allocation,
-    gpointer user_data)
+start_render_factal_region (AppData *self)
 {
-  AppData *self = (AppData *) user_data;
-
-  // stop rendering
-  if (self->render_id)
-    g_source_remove (self->render_id);
-
-  self->ww = allocation->width;
-  self->w = allocation->width - UI_PANNEL_W;
-  self->h = allocation->height;
-  self->h2 = self->h >> 1;
+  struct reqion *r = &regions[UIV_REGION];
 
   if (self->pix)
     cairo_surface_destroy (self->pix);
   self->pix = cairo_image_surface_create (CAIRO_FORMAT_RGB24, self->w, self->h);
 
-  self->crx = -2.0;
-  self->crw = 2.5;
+  self->crx = r->x1;
+  self->crw = r->x2 - r->x1;
   self->crs = self->crw / self->w;
-  self->ciy = -1.15;
-  self->cih = 2.3;
+  self->ciy = r->y1;
+  self->cih = r->y2 - r->y1;
   self->cis = self->cih / self->h;
 
   // repaint all
   self->ci = self->ciy;
   self->y = 0;
   self->render_id = g_idle_add (do_mandelbot_image, (gpointer) self);
+}
+
+static void
+stop_render_fractal_region (AppData *self)
+{
+  // stop rendering
+  if (self->render_id) {
+    g_source_remove (self->render_id);
+    self->render_id = 0;
+  }
+}
+
+static void
+on_size_allocate (GtkWidget * widget, GtkAllocation * allocation,
+    gpointer user_data)
+{
+  AppData *self = (AppData *) user_data;
+
+  stop_render_fractal_region (self);
+
+  self->ww = allocation->width;
+  self->w = allocation->width - UI_PANNEL_W;
+  self->h = allocation->height;
+
+  start_render_factal_region (self);
 }
 
 static void
@@ -669,6 +705,11 @@ update_ui_param (AppData *self, gint p_ix) {
     case UIP_HARMONICS_DECAY:
       sprintf(p->value_desc, "%6.4lf", p->value);
       setup_harmonic_decay (self);
+      break;
+    case UIP_REGION:
+      sprintf(p->value_desc, "%d", v);
+      stop_render_fractal_region (self);
+      start_render_factal_region (self);
       break;
     default:
       break;
