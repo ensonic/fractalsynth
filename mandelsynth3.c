@@ -82,10 +82,11 @@ static gint nharnmonics[G_N_ELEMENTS(midi2frq)];
 typedef enum {
   CENTER_MODE_FIRST = 0,  // No offset compensation
   CENTER_MODE_LAST,       // Convergence point (depends on niter inside the set)
+  CENTER_MODE_MID,        // Min + (Max - Min) / 2
   CENTER_MODE_AVERAGE,    // Average of the values
 } CenterMode;
 
-const gchar* center_mode_str[] = { "first", "last", "avg"};
+const gchar* center_mode_str[] = { "first", "last", "mid", "avg"};
 
 // regions of the mandelbrot set
 static struct reqion {
@@ -294,7 +295,6 @@ process_orbit (AppData *self)
   complexd *v = self->v;
   complexd *f = self->f;
   gdouble tr, ti;
-  gdouble mir, mar, mii, mai;
   gint i,j;
   gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
 
@@ -310,8 +310,10 @@ process_orbit (AppData *self)
       ci = v[niter2].i;
       break;
     }
-    case CENTER_MODE_AVERAGE:
-      // center on average
+    case CENTER_MODE_MID: {
+      // center on min + (max-min) / 1
+      gdouble mir, mar, mii, mai;
+
       mir = mar = v[0].r;
       mii = mai = v[0].i;
       for (i = 1; i < niter; i++) {
@@ -327,6 +329,19 @@ process_orbit (AppData *self)
       cr = mir + (mar - mir) / 2.0;
       ci = mii + (mai - mii) / 2.0;
       break;
+    }
+    case CENTER_MODE_AVERAGE: {
+      gdouble sr = 0.0, si = 0.0;
+      for (i = 0; i < niter; i++) {
+        sr += v[i].r;
+        si += v[i].i;
+      }
+      cr = sr / niter;
+      ci = si / niter;
+      break;
+    }
+    // TODO: more modes
+    // https://de.wikipedia.org/wiki/Mittelwert
     default:
       break;
   }
