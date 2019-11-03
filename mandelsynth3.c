@@ -140,10 +140,10 @@ static UiParam ui_par[] = {
   },
 };
 
-#define UIV_CENTER_MODE ((gint)(ui_par[UIP_CENTER_MODE].value))
-#define UIV_OCT ((gint)(ui_par[UIP_OCT].value))
+#define UIV_CENTER_MODE ((gint)(round(ui_par[UIP_CENTER_MODE].value)))
+#define UIV_OCT ((gint)(round(ui_par[UIP_OCT].value)))
 #define UIV_HARMONICS_DECAY (ui_par[UIP_HARMONICS_DECAY].value)
-#define UIV_REGION ((gint)(ui_par[UIP_REGION].value))
+#define UIV_REGION ((gint)(round(ui_par[UIP_REGION].value)))
 
 // fast sine waves
 typedef struct _fastsin {
@@ -707,7 +707,7 @@ update_note (AppData *self, gint note) {
 static void
 update_ui_param (AppData *self, gint p_ix) {
   UiParam *p = &ui_par[p_ix];
-  gint v = (gint)(p->value);
+  gint v = (gint)(round(p->value));
 
   switch (p_ix) {
     case UIP_CENTER_MODE:
@@ -731,6 +731,29 @@ update_ui_param (AppData *self, gint p_ix) {
   }
 }
 
+static void
+handle_slider(AppData *self, GdkEventButton * event)
+{
+    // TODO: check if over slider
+    gint ly = event->y / FONT_SIZE;
+    if ((ly & 0x3) == 2) {
+      gint p_ix = event->y / (FONT_SIZE * 4);
+      if (p_ix < G_N_ELEMENTS(ui_par)) {
+        UiParam *p = &ui_par[p_ix];
+        // compute new value
+        gint lx1 = self->w + 5, lx2 = self->ww - 5, lxw = lx2 - lx1;
+        gdouble rel = (event->x - lx1) / lxw;
+        rel = CLAMP(rel, 0.0, 1.0);
+        double nv = p->min + rel * (p->max - p->min);
+        if (fabs(nv - p->value) > 0.01) {
+          p->value = p->min + rel * (p->max - p->min);
+          update_ui_param (self, p_ix);
+          gtk_widget_queue_draw (self->window);
+        }
+      }
+    }
+}
+
 static gboolean
 on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
 {
@@ -742,7 +765,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
         if (event->button.x < self->w) {
           self->motion = TRUE;
         } else {
-          // TODO: check if over slider
+          handle_slider (self, &event->button);
         }
       }
       break;
@@ -751,21 +774,6 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
         if (event->button.x < self->w) {
           self->motion = FALSE;
         } else {
-          // TODO: check if over slider
-          gint ly = event->button.y / FONT_SIZE;
-          if ((ly & 0x3) == 2) {
-            gint p_ix = event->button.y / (FONT_SIZE * 4);
-            if (p_ix < G_N_ELEMENTS(ui_par)) {
-              UiParam *p = &ui_par[p_ix];
-              // compute new value
-              gint lx1 = self->w + 5, lx2 = self->ww - 5, lxw = lx2 - lx1;
-              gdouble rel = (event->button.x - lx1) / lxw;
-              rel = CLAMP(rel, 0.0, 1.0);
-              p->value = p->min + rel * (p->max - p->min);
-              update_ui_param (self, p_ix);
-              gtk_widget_queue_draw (self->window);
-            }
-          }
         }
       }
       break;
@@ -873,6 +881,8 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
 
         gtk_widget_queue_draw (self->window);
 
+      } else {
+        handle_slider (self, &event->button);
       }
       break;
     default:
