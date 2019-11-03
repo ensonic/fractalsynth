@@ -734,24 +734,24 @@ update_ui_param (AppData *self, gint p_ix) {
 static void
 handle_slider(AppData *self, GdkEventButton * event)
 {
-    // TODO: check if over slider
-    gint ly = event->y / FONT_SIZE;
-    if ((ly & 0x3) == 2) {
-      gint p_ix = event->y / (FONT_SIZE * 4);
-      if (p_ix < G_N_ELEMENTS(ui_par)) {
-        UiParam *p = &ui_par[p_ix];
-        // compute new value
-        gint lx1 = self->w + 5, lx2 = self->ww - 5, lxw = lx2 - lx1;
-        gdouble rel = (event->x - lx1) / lxw;
-        rel = CLAMP(rel, 0.0, 1.0);
-        double nv = p->min + rel * (p->max - p->min);
-        if (fabs(nv - p->value) > 0.01) {
-          p->value = p->min + rel * (p->max - p->min);
-          update_ui_param (self, p_ix);
-          gtk_widget_queue_draw (self->window);
-        }
+  // TODO: check if over slider
+  gint ly = event->y / FONT_SIZE;
+  if ((ly & 0x3) == 2) {
+    gint p_ix = event->y / (FONT_SIZE * 4);
+    if (p_ix < G_N_ELEMENTS(ui_par)) {
+      UiParam *p = &ui_par[p_ix];
+      // compute new value
+      gint lx1 = self->w + 5, lx2 = self->ww - 5, lxw = lx2 - lx1;
+      gdouble rel = (event->x - lx1) / lxw;
+      rel = CLAMP(rel, 0.0, 1.0);
+      double nv = p->min + rel * (p->max - p->min);
+      if (fabs(nv - p->value) > 0.01) {
+        p->value = p->min + rel * (p->max - p->min);
+        update_ui_param (self, p_ix);
+        gtk_widget_queue_draw (self->window);
       }
     }
+  }
 }
 
 static gboolean
