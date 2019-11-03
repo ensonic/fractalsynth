@@ -98,9 +98,21 @@ static struct reqion {
   { -0.774, -0.784, 0.125, 0.135},
 };
 
+// How to set the magtitude for the harmonics
+typedef enum {
+  MAG_MODE_MAG,
+  MAG_MODE_PHASE,
+  MAG_MODE_R,
+  MAG_MODE_RQ,
+  MAG_MODE_I,
+  MAG_MODE_IQ,
+} MagnitudeMode;
+
+const gchar* mag_mode_str[] = { "mag", "phase", "real", "real²", "imag", "imag²" };
+
 // UI
 
-#define UI_PANNEL_W 120
+#define UI_PANNEL_W 130
 #define FONT_SIZE 10.0
 
 typedef struct _uiparam {
@@ -114,13 +126,14 @@ enum {
   UIP_OCT,
   UIP_HARMONICS_DECAY,
   UIP_REGION,
+  UIP_MAG_MODE,
   _UIPS
 };
 
 static UiParam ui_par[] = {
   {
     0.0, CENTER_MODE_AVERAGE, CENTER_MODE_FIRST,
-    "center mode", { '\0', }
+    "center md.", { '\0', }
   },
   {
     0.0, 6.0, 2.0,
@@ -138,12 +151,17 @@ static UiParam ui_par[] = {
     0.0, 3.0, 0.0,
     "region", { '\0', }
   },
+  {
+    0.0, MAG_MODE_IQ, MAG_MODE_MAG,
+    "magnitude md.", { '\0', }
+  },
 };
 
 #define UIV_CENTER_MODE ((gint)(round(ui_par[UIP_CENTER_MODE].value)))
 #define UIV_OCT ((gint)(round(ui_par[UIP_OCT].value)))
 #define UIV_HARMONICS_DECAY (ui_par[UIP_HARMONICS_DECAY].value)
 #define UIV_REGION ((gint)(round(ui_par[UIP_REGION].value)))
+#define UIV_MAG_MODE ((gint)(round(ui_par[UIP_MAG_MODE].value)))
 
 // fast sine waves
 typedef struct _fastsin {
@@ -189,6 +207,9 @@ typedef struct _AppData {
 
   // harmonic decay
   gdouble *hd;
+
+  // magnitudes for overtones
+  gdouble *m;
 
   // osc for harmonics display
   gdouble *waved;
@@ -294,6 +315,7 @@ process_orbit (AppData *self)
   gdouble cr = self->cr, ci = self->ci;
   complexd *v = self->v;
   complexd *f = self->f;
+  gdouble *hd = self->hd, *m = self->m;
   gdouble tr, ti;
   gint i,j;
   gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
@@ -346,7 +368,6 @@ process_orbit (AppData *self)
       break;
   }
   // convert orbit series to magnitude and phase pairs
-  // should we set [0] to some special value (dc offset)?
   for (i = 0; i < niter; i++) {
     tr = v[i].r - cr;
     ti = v[i].i - ci;
@@ -360,31 +381,66 @@ process_orbit (AppData *self)
   for (i = niter; i < nfreq; i++) {
     f[i].r = f[i].i = 0.0;
   }
+  // apply magnitude mode
+  switch (UIV_MAG_MODE) {
+    case MAG_MODE_MAG:
+      for (i = 0; i < nfreq; i++) {
+        m[i] = f[i].r;
+      }
+      break;
+    case MAG_MODE_PHASE:
+      for (i = 0; i < nfreq; i++) {
+        m[i] = f[i].i;
+      }
+      break;
+    case MAG_MODE_R:
+      for (i = 0; i < nfreq; i++) {
+        m[i] = v[i].r - cr;
+      }
+      break;
+    case MAG_MODE_RQ:
+      for (i = 0; i < nfreq; i++) {
+        tr = v[i].r - cr;
+        m[i] = tr * tr;
+      }
+      break;
+    case MAG_MODE_I:
+      for (i = 0; i < nfreq; i++) {
+        m[i] = v[i].i - ci;
+      }
+      break;
+    case MAG_MODE_IQ:
+      for (i = 0; i < nfreq; i++) {
+        ti = v[i].i - ci;
+        m[i] = ti * ti;
+      }
+      break;
+  }
 
   fsin *fs = self->fsd;
   gdouble *w = self->waved;
-  gdouble s, m = 0.0;
+  gdouble s, max_s = 0.0;
   for (i = 0; i < ntime;) {
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
       fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
-      s += fs[j].si0 * f[j].r;
+      s += fs[j].si0 * m[j] * hd[j];
     }
     w[i++] = s;
-    if (fabs (s) > m)
-      m = fabs (s);
+    if (fabs (s) > max_s)
+      max_s = fabs (s);
 
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
       fs[j].si1 = fs[j].fc * fs[j].si0 - fs[j].si1;
-      s += fs[j].si1 * f[j].r;
+      s += fs[j].si1 * m[j] * hd[j];
     }
     w[i++] = s;
-    if (fabs (s) > m)
-      m = fabs (s);
+    if (fabs (s) > max_s)
+      max_s = fabs (s);
   }
   for (i = 0; i < ntime; i++) {
-    w[i] = w[i] / m;
+    w[i] = w[i] / max_s;
   }
 }
 
@@ -503,6 +559,10 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 
     sprintf (text, "%6.4lf, %6.4lf", self->cr, self->ci);
     cairo_show_right_aligned_text_at (cr, self->w - 5.0, 3 * FONT_SIZE, text);
+
+    sprintf (text, "it: %3d", self->niter);
+    cairo_show_right_aligned_text_at (cr, self->w - 5.0, 5 * FONT_SIZE, text);
+
   }
 
   // ui sliders
@@ -610,7 +670,7 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     cairo_stroke (cr);
   }
 
-  // spectrogram (bottom-left, 0..w/3, 4*h/5..h)
+  // spectrogram & magnitude mode (bottom-left, 0..w/3, 4*h/5..h)
   {
     gdouble h = self->h, hs = h / 5.0, v;
     gdouble xs = self->w / (3.0 * nfreq);
@@ -622,11 +682,11 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
 
     cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
     cairo_move_to (cr, 3.0, h - (hs + font_size_h));
-    cairo_show_text (cr, "spectrogram (magnitude: red, phase: green)");
+    cairo_show_text (cr, "spectrogram (magnitude: red, phase: green, applied: blue)");
     cairo_stroke (cr);
 
     // magnitude
-    cairo_set_source_rgb (cr, 1.0, 0.3, 0.0);
+    cairo_set_source_rgb (cr, 1.0, 0.3, 0.3);
     cairo_move_to (cr, 0.0, h);
     for (i = 0; i < nfreq; i++) {
       v = MIN (f[i].r, 1.0);
@@ -635,13 +695,35 @@ on_draw (GtkWidget * widget, cairo_t * cr, gpointer user_data)
     cairo_stroke (cr);
 
     // phase
-    cairo_set_source_rgb (cr, 0.3, 1.0, 0.0);
+    cairo_set_source_rgb (cr, 0.3, 1.0, 0.3);
     cairo_move_to (cr, 0.0, h);
     for (i = 0; i < nfreq; i++) {
       v = (M_PI + f[i].i) / (M_PI + M_PI);
       cairo_line_to (cr, i * xs, h - (v * hs));
     }
     cairo_stroke (cr);
+
+    // applied magnitude
+    if (UIV_MAG_MODE > MAG_MODE_PHASE) {
+      gdouble *m = self->m;
+      cairo_set_source_rgb (cr, 0.4, 0.4, 1.0);
+      cairo_move_to (cr, 0.0, h);
+      gdouble mi = 0.0, ma = 0.0;
+      for (i = 0; i < nfreq; i++) {
+        if (m[i] < mi) {
+          mi = m[i];
+        }
+        if (m[i] > ma) {
+          ma = m[i];
+        }
+      }
+      gdouble md = ma - mi;
+      for (i = 0; i < nfreq; i++) {
+        v = (m[i] - mi) / md;
+        cairo_line_to (cr, i * xs, h - (v * hs));
+      }
+      cairo_stroke (cr);
+    }
   }
 
   return TRUE;
@@ -725,6 +807,9 @@ update_ui_param (AppData *self, gint p_ix) {
       sprintf(p->value_desc, "%d", v);
       stop_render_fractal_region (self);
       start_render_factal_region (self);
+      break;
+    case UIP_MAG_MODE:
+      sprintf(p->value_desc, "%s", mag_mode_str[v]);
       break;
     default:
       break;
@@ -904,20 +989,19 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
   gint nfreq = self->nfreq, ntime = self->ntime;
   gint i,j;
   fsin *fs = self->fs;
-  gdouble s, *w = self->wave, *hd = self->hd;
-  complexd *f = self->f;
+  gdouble s, *w = self->wave, *hd = self->hd, *m = self->m;
   for (i = 0; i < ntime;) {
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
       fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
-      s += fs[j].si0 * f[j].r * hd[j];
+      s += fs[j].si0 * m[j] * hd[j];
     }
     w[i++] = s;
 
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
       fs[j].si1 = fs[j].fc * fs[j].si0 - fs[j].si1;
-      s += fs[j].si1 * f[j].r * hd[j];
+      s += fs[j].si1 * m[j] * hd[j];
     }
     w[i++] = s;
   }
@@ -954,6 +1038,8 @@ initialize (AppData * self)
 
   self->hd = g_new0 (gdouble, self->nfreq);
   setup_harmonic_decay (self);
+
+  self->m = g_new0 (gdouble, self->nfreq);
 
   // ui params
   {
@@ -1035,6 +1121,7 @@ finalize (AppData * self)
   g_free (self->wave);
 
   g_free (self->hd);
+  g_free (self->m);
 
   g_free (self->fsd);
   g_free (self->waved);
