@@ -892,6 +892,20 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
             gtk_widget_queue_draw (self->window);
           }
           break;
+        case GDK_KEY_5:
+          if (UIV_MAG_MODE > 0) {
+            ui_par[UIP_MAG_MODE].value = UIV_MAG_MODE - 1;
+            update_ui_param (self, UIP_MAG_MODE);
+            gtk_widget_queue_draw (self->window);
+          }
+          break;
+        case GDK_KEY_6:
+          if (UIV_MAG_MODE < MAG_MODE_IQ) {
+            ui_par[UIP_MAG_MODE].value = UIV_MAG_MODE + 1;
+            update_ui_param (self, UIP_MAG_MODE);
+            gtk_widget_queue_draw (self->window);
+          }
+          break;
         case GDK_KEY_y:
         case GDK_KEY_z:
           update_note (self, 0);
