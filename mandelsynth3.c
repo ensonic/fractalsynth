@@ -41,6 +41,8 @@
  *   - distribute the voices in the stereo panorama
  *   - where each voice has a different x/y where the displacement is controlled
  *     by two modulators in relation to the main voice
+ * - for the mag modes, consider a separate settings to fabs() them and to pull
+ *   the smalles value down to zero
  */
 /* DONE:
  * - using a 2nd voice with sligthly detuned harmonics gives a fatter sound
@@ -106,13 +108,15 @@ typedef enum {
   MAG_MODE_RQ,
   MAG_MODE_I,
   MAG_MODE_IQ,
+  MAG_MODE_MAG_T_PHASE,
+  MAG_MODE_R_I_DIFF
 } MagnitudeMode;
 
-const gchar* mag_mode_str[] = { "mag", "phase", "real", "real²", "imag", "imag²" };
+const gchar* mag_mode_str[] = { "mag", "phase", "real", "real²", "imag", "imag²", "mag*phase", "real-imag" };
 
 // UI
 
-#define UI_PANNEL_W 130
+#define UI_PANNEL_W 140
 #define FONT_SIZE 10.0
 
 typedef struct _uiparam {
@@ -152,7 +156,7 @@ static UiParam ui_par[] = {
     "region", { '\0', }
   },
   {
-    0.0, MAG_MODE_IQ, MAG_MODE_MAG,
+    0.0, MAG_MODE_R_I_DIFF, MAG_MODE_MAG,
     "magnitude md.", { '\0', }
   },
 };
@@ -414,6 +418,21 @@ process_orbit (AppData *self)
         ti = v[i].i - ci;
         m[i] = ti * ti;
       }
+      break;
+    case  MAG_MODE_MAG_T_PHASE:
+      for (i = 0; i < nfreq; i++) {
+        m[i] = f[i].r * f[i].i;
+      }
+      break;
+    case MAG_MODE_R_I_DIFF:
+      for (i = 0; i < nfreq; i++) {
+        tr = v[i].r - cr;
+        ti = v[i].i - ci;
+        m[i] = tr - ti;
+      }
+      break;
+
+    default:
       break;
   }
 
@@ -900,7 +919,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
           }
           break;
         case GDK_KEY_6:
-          if (UIV_MAG_MODE < MAG_MODE_IQ) {
+          if (UIV_MAG_MODE < MAG_MODE_R_I_DIFF) {
             ui_par[UIP_MAG_MODE].value = UIV_MAG_MODE + 1;
             update_ui_param (self, UIP_MAG_MODE);
             gtk_widget_queue_draw (self->window);
