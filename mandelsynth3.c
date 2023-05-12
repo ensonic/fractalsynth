@@ -331,7 +331,7 @@ process_orbit (AppData *self)
   gdouble *hd = self->hd, *m = self->m;
   gdouble tr, ti;
   gint i,j;
-  gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
+  const gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
 
   switch (UIV_CENTER_MODE) {
     case CENTER_MODE_FIRST:
@@ -493,10 +493,11 @@ init_fsin (fsin *fs, gdouble cycle_length, gint nfreq)
 static void
 setup_osc (AppData * self)
 {
+  const gint nfreq = self->nfreq;
   gint j;
   fsin *fs = self->fs;
 
-  for (j = 0; j < self->nfreq; j++) {
+  for (j = 0; j < nfreq; j++) {
     fs[j].si0 = fs[j].si1 = fs[j].fc = 0.0;
   }
 
@@ -508,7 +509,7 @@ setup_osc (AppData * self)
   gdouble frq = midi2frq[note];
   // sampling rate is 44100 (SRATE)
   // if freq = 440, cycle_samples = 44100 / 440
-  init_fsin (fs, ((gdouble)SRATE) / frq, MIN(self->nfreq, nharnmonics[note]));
+  init_fsin (fs, ((gdouble)SRATE) / frq, MIN(nfreq, nharnmonics[note]));
 }
 
 static void
@@ -529,7 +530,8 @@ setup_harmonics (void)
 static void
 setup_harmonic_decay (AppData * self)
 {
-  gint j, nfreq = self->nfreq;
+  const gint nfreq = self->nfreq;
+  gint j;
   gdouble *hd = self->hd;
   // linear
   //gdouble hdf = UIV_HARMONICS_DECAY;
@@ -1047,7 +1049,7 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
   if (length != -1 && length < size)
     return;
 
-  gint nfreq = self->nfreq, ntime = self->ntime;
+  const gint nfreq = self->nfreq, ntime = self->ntime;
   gint i,j;
   fsin *fs = self->fs;
   gdouble s, *w = self->wave, *hd = self->hd, *m = self->m;
