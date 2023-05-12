@@ -51,6 +51,8 @@
  *     - auto: if converge -> forward, if diverge -> backwards
  *     - forward: what we currently do, first iteration becomes lowest harmonics
  *     - backward: last iteration becomes lowest harmonics
+ * - add switching for mandelbort/julia
+ * - add support for other fractal formulas
  */
 /* DONE:
  * - using a 2nd voice with sligthly detuned harmonics gives a fatter sound
@@ -230,8 +232,10 @@ typedef struct _AppData {
 } AppData;
 static AppData app = { 0, };
 
+// fractal functions
+
 static guint
-do_mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, complexd * v)
+mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, complexd *v)
 {
   // z = z² + c
   gdouble zr = cr, zi = ci, zt;
@@ -261,7 +265,7 @@ do_mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, complexd * v)
 
 
 static guint
-do_mandelbrot (gdouble cr, gdouble ci, guint maxn)
+mandelbrot (gdouble cr, gdouble ci, guint maxn)
 {
   // z = z² + c
   gdouble zr = cr, zi = ci, zt;
@@ -279,8 +283,16 @@ do_mandelbrot (gdouble cr, gdouble ci, guint maxn)
   return n;
 }
 
+typedef guint (*factal_func)(gdouble, gdouble, guint);
+typedef guint (*factal_traced_func)(gdouble, gdouble, guint, complexd*);
+
+static factal_func fractal = &mandelbrot;
+static factal_traced_func fractal_traced = &mandelbrot_traced;
+
+// rendering
+
 static gboolean
-do_mandelbot_image (gpointer user_data)
+render_fractal_image (gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
   guint8 *src = cairo_image_surface_get_data (self->pix), *line;
@@ -293,7 +305,7 @@ do_mandelbot_image (gpointer user_data)
   // fill one line and do y-mirroring
   line = src + (y * stride);
   for (x = 0; x < w; x++) {
-    c = do_mandelbrot (cr, ci, 256);
+    c = fractal (cr, ci, 256);
     if (c == 256) {
       (*line++) = 0;
       (*line++) = 0;
@@ -793,7 +805,7 @@ start_render_factal_region (AppData *self)
   // repaint all
   self->ci = self->ciy;
   self->y = 0;
-  self->render_id = g_idle_add (do_mandelbot_image, (gpointer) self);
+  self->render_id = g_idle_add (render_fractal_image, (gpointer) self);
 }
 
 static void
@@ -1038,7 +1050,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
         self->ci = self->ciy + event->button.y * self->cis;
 
         // calculate mandelbrot, but store intermediate values
-        self->niter = do_mandelbrot_traced (self->cr, self->ci, self->nfreq,
+        self->niter = fractal_traced (self->cr, self->ci, self->nfreq,
             self->v);
 
         gtk_widget_queue_draw (self->window);

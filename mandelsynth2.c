@@ -115,7 +115,7 @@ do_mandelbrot (gdouble cr, gdouble ci, guint maxn)
 }
 
 static gboolean
-do_mandelbot_image (gpointer user_data)
+render_fractal_image (gpointer user_data)
 {
   AppData *self = (AppData *) user_data;
   guint8 *src = cairo_image_surface_get_data (self->pix), *line1, *line2;
@@ -382,7 +382,7 @@ on_size_allocate (GtkWidget * widget, GtkAllocation * allocation,
   // repaint all
   self->ci = self->ciy;
   self->y = 0;
-  self->render_id = g_idle_add (do_mandelbot_image, (gpointer) self);
+  self->render_id = g_idle_add (render_fractal_image, (gpointer) self);
 }
 
 static gboolean
