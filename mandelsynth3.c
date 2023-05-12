@@ -8,10 +8,11 @@
  *
  * Usage:
  * - left-mouse down + drag: change the sprectrum
- * - '1': decrement center mode
- * - '2': increment center mode
- * - '3': decrement octave
- * - '4': increment octave
+ * - '1'/'2': decrement/increment center mode
+ * - '3'/'4': decrement/increment octave
+ * - '5'/'6': prev/next magnitude mode
+ * - '7'/'8': prev/next factal fomula
+ * - '#': switch between mandelbrot/julia
  * - space: 1st record point, afterward print segments to console 
  * - alpha keys (1 oct) to play notes ('y/z') -> c, 's' -> c#, ...
  *
@@ -51,8 +52,7 @@
  *     - auto: if converge -> forward, if diverge -> backwards
  *     - forward: what we currently do, first iteration becomes lowest harmonics
  *     - backward: last iteration becomes lowest harmonics
- * - add switching for mandelbort/julia
- * - add support for other fractal formulas
+ * - add more fractal fomulas
  */
 /* DONE:
  * - using a 2nd voice with sligthly detuned harmonics gives a fatter sound
@@ -60,6 +60,8 @@
  * - harmonics decay:
  *   - linear decay is almost not noticable
  * - normalize harmonic series by max magnitude to ensure loudness does not fluctuate too much
+ * - add switching for mandelbort/julia
+ * - add support for other fractal formulas
  */
 
 #include <math.h>
@@ -113,7 +115,7 @@ static struct reqion {
 
 // How to set the magtitude for the harmonics
 typedef enum {
-  MAG_MODE_MAG,
+  MAG_MODE_MAG = 0,
   MAG_MODE_PHASE,
   MAG_MODE_R,
   MAG_MODE_RQ,
@@ -124,6 +126,14 @@ typedef enum {
 } MagnitudeMode;
 
 const gchar* mag_mode_str[] = { "mag", "phase", "real", "real²", "imag", "imag²", "mag*phase", "real-imag" };
+
+// While fractal-formula to use
+typedef enum {
+  FRACTAL_TYPE_MANDELBROT = 0,
+  FRACTAL_TYPE_JULIA
+} FractalType;
+
+const gchar* frac_type_str[] = {"mandel", "julia"};
 
 // UI
 
@@ -142,6 +152,7 @@ enum {
   UIP_HARMONICS_DECAY,
   UIP_REGION,
   UIP_MAG_MODE,
+  UIP_FRAC_TYPE,
   _UIPS
 };
 
@@ -170,6 +181,10 @@ static UiParam ui_par[] = {
     0.0, MAG_MODE_R_I_DIFF, MAG_MODE_MAG,
     "magnitude md.", { '\0', }
   },
+  {
+    0.0, FRACTAL_TYPE_JULIA, FRACTAL_TYPE_MANDELBROT,
+    "fractal type", { '\0', }
+  },
 };
 
 #define UIV_CENTER_MODE ((gint)(round(ui_par[UIP_CENTER_MODE].value)))
@@ -177,6 +192,7 @@ static UiParam ui_par[] = {
 #define UIV_HARMONICS_DECAY (ui_par[UIP_HARMONICS_DECAY].value)
 #define UIV_REGION ((gint)(round(ui_par[UIP_REGION].value)))
 #define UIV_MAG_MODE ((gint)(round(ui_par[UIP_MAG_MODE].value)))
+#define UIV_FRAC_TYPE ((gint)(round(ui_par[UIP_FRAC_TYPE].value)))
 
 // fast sine waves
 typedef struct _fastsin {
@@ -193,11 +209,18 @@ typedef struct _AppData {
   guint w, h, y, ww;
   // rendering idle handler
   guint render_id;
-  // complex plane
-  gdouble crx, crw, crs, cr;
-  gdouble ciy, cih, cis, ci;
+  // fractal area (<start>, <size>, <step>)
+  gdouble crx, crw, crs;
+  gdouble ciy, cih, cis;
+  // point selected by mouse
+  gdouble cr, ci;
+  // static point for julia variant
+  gdouble jcr, jci; 
   // last orbit
   gint niter;
+
+  // pass jcr,jci or cr,ci;
+  gboolean julia_mode;
 
   // track motion?
   gboolean motion;
@@ -234,11 +257,62 @@ static AppData app = { 0, };
 
 // fractal functions
 
+// z = z² + c
 static guint
-mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, complexd *v)
+mandelbrot_traced (gdouble zr, gdouble zi, gdouble cr, gdouble ci, guint maxn, complexd *v)
 {
-  // z = z² + c
-  gdouble zr = cr, zi = ci, zt;
+  gdouble zt;
+  guint n = 0;
+
+  cr = zr;
+  ci = zi;
+  while (n < maxn) {
+    v[n].r = zr;
+    v[n].i = zi;
+    zt = cr + zr * zr - zi * zi;
+    zi = ci + 2.0 * zi * zr;
+    zr = zt;
+
+    if (sqrt (zr * zr + zi * zi) > 2.0) {
+      guint m;
+
+      // set the rest to inital position to avoid noise
+      for (m = n; m < maxn; m++) {
+        v[m].r = zr;
+        v[m].i = zi;
+      }
+      break;
+    }
+    n++;
+  }
+  return n;
+}
+
+static guint
+mandelbrot (gdouble zr, gdouble zi, gdouble cr, gdouble ci, guint maxn)
+{
+  gdouble zt;
+  guint n = 0;
+
+  cr = zr;
+  ci = zi;
+  while (n < maxn) {
+    zt = cr + zr * zr - zi * zi;
+    zi = ci + 2.0 * zi * zr;
+    zr = zt;
+
+    if (sqrt (zr * zr + zi * zi) > 2.0)
+      break;
+    n++;
+  }
+  return n;
+}
+
+// z = z² + c
+static guint
+julia_traced (gdouble zr, gdouble zi, gdouble cr, gdouble ci, guint maxn, complexd *v)
+{
+  gdouble zt;
   guint n = 0;
 
   while (n < maxn) {
@@ -263,12 +337,10 @@ mandelbrot_traced (gdouble cr, gdouble ci, guint maxn, complexd *v)
   return n;
 }
 
-
 static guint
-mandelbrot (gdouble cr, gdouble ci, guint maxn)
+julia (gdouble zr, gdouble zi, gdouble cr, gdouble ci, guint maxn)
 {
-  // z = z² + c
-  gdouble zr = cr, zi = ci, zt;
+  gdouble zt;
   guint n = 0;
 
   while (n < maxn) {
@@ -283,8 +355,8 @@ mandelbrot (gdouble cr, gdouble ci, guint maxn)
   return n;
 }
 
-typedef guint (*factal_func)(gdouble, gdouble, guint);
-typedef guint (*factal_traced_func)(gdouble, gdouble, guint, complexd*);
+typedef guint (*factal_func)(gdouble, gdouble, gdouble, gdouble, guint);
+typedef guint (*factal_traced_func)(gdouble, gdouble, gdouble, gdouble, guint, complexd*);
 
 static factal_func fractal = &mandelbrot;
 static factal_traced_func fractal_traced = &mandelbrot_traced;
@@ -301,11 +373,12 @@ render_fractal_image (gpointer user_data)
   guint c;
   gdouble cr = self->crx, crs = self->crs;
   gdouble ci = self->ci;
+  gdouble jcr = self->jcr, jci = self->jci;
 
-  // fill one line and do y-mirroring
+  // fill one line
   line = src + (y * stride);
   for (x = 0; x < w; x++) {
-    c = fractal (cr, ci, 256);
+    c = fractal (cr, ci, jcr, jci, 256);
     if (c == 256) {
       (*line++) = 0;
       (*line++) = 0;
@@ -834,6 +907,24 @@ on_size_allocate (GtkWidget * widget, GtkAllocation * allocation,
 }
 
 static void
+update_fractal_type (AppData *self) {
+  switch (UIV_FRAC_TYPE) {
+    case FRACTAL_TYPE_MANDELBROT:
+      self->julia_mode = FALSE;
+      fractal = &mandelbrot;
+      fractal_traced = &mandelbrot_traced;
+      break;
+    case FRACTAL_TYPE_JULIA:
+      self->julia_mode = TRUE;
+      self->jcr = self->cr;
+      self->jci = self->ci;
+      fractal = &julia;
+      fractal_traced = &julia_traced;
+      break;
+  }
+}
+
+static void
 update_note (AppData *self, gint note) {
   if (self->note == note)
     return;
@@ -867,6 +958,12 @@ update_ui_param (AppData *self, gint p_ix) {
       break;
     case UIP_MAG_MODE:
       sprintf(p->value_desc, "%s", mag_mode_str[v]);
+      break;
+    case UIP_FRAC_TYPE:
+      sprintf(p->value_desc, "%s", frac_type_str[v]);
+      update_fractal_type(self);
+      stop_render_fractal_region (self);
+      start_render_factal_region (self);
       break;
     default:
       break;
@@ -963,6 +1060,20 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
             gtk_widget_queue_draw (self->window);
           }
           break;
+        case GDK_KEY_7:
+          if (UIV_FRAC_TYPE > 0) {
+            ui_par[UIP_FRAC_TYPE].value = UIV_FRAC_TYPE - 1;
+            update_ui_param (self, UIP_FRAC_TYPE);
+            gtk_widget_queue_draw (self->window);
+          }
+          break;
+        case GDK_KEY_8:
+          if (UIV_FRAC_TYPE < FRACTAL_TYPE_JULIA) {
+            ui_par[UIP_FRAC_TYPE].value = UIV_FRAC_TYPE + 1;
+            update_ui_param (self, UIP_FRAC_TYPE);
+            gtk_widget_queue_draw (self->window);
+          }
+          break;  
         case GDK_KEY_y:
         case GDK_KEY_z:
           update_note (self, 0);
@@ -1019,6 +1130,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
           break;
         }
         default:
+          // printf("keyval: 0x%04x\n",event->key.keyval);
           break;
       }
       break;
@@ -1050,8 +1162,7 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
         self->ci = self->ciy + event->button.y * self->cis;
 
         // calculate mandelbrot, but store intermediate values
-        self->niter = fractal_traced (self->cr, self->ci, self->nfreq,
-            self->v);
+        self->niter = fractal_traced (self->cr, self->ci, self->jcr, self->jci, self->nfreq, self->v);
 
         gtk_widget_queue_draw (self->window);
 
