@@ -44,6 +44,14 @@
  *     by two modulators in relation to the main voice
  * - for the mag modes, consider a separate settings to fabs() them and to pull
  *   the smalles value down to zero
+ * - add directional mapping for the harmonic series
+ *   - inside the set the harmonic series is converging, outside it is diveging
+ *   - with the current way we map iterations to hardmonics we get harsh sounds for diverging series
+ *   - add modes:
+ *     - auto: if converge -> forward, if diverge -> backwards
+ *     - forward: what we currently do, first iteration becomes lowest harmonics
+ *     - backward: last iteration becomes lowest harmonics
+ * - normalize diverging series by max magnitude (otherwise these get too loud)
  */
 /* DONE:
  * - using a 2nd voice with sligthly detuned harmonics gives a fatter sound
@@ -437,6 +445,7 @@ process_orbit (AppData *self)
       break;
   }
 
+  // compute one wave for wave display
   fsin *fs = self->fsd;
   gdouble *w = self->waved;
   gdouble s, max_s = 0.0;
@@ -1043,6 +1052,7 @@ on_need_data (GstAppSrc * appsrc, guint length, gpointer user_data)
   fsin *fs = self->fs;
   gdouble s, *w = self->wave, *hd = self->hd, *m = self->m;
   for (i = 0; i < ntime;) {
+    // additive synth (unrolled by 2 required for fastsine)
     s = 0.0;
     for (j = 0; j < nfreq; j++) {
       fs[j].si0 = fs[j].fc * fs[j].si1 - fs[j].si0;
