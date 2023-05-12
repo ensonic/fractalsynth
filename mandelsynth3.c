@@ -51,13 +51,13 @@
  *     - auto: if converge -> forward, if diverge -> backwards
  *     - forward: what we currently do, first iteration becomes lowest harmonics
  *     - backward: last iteration becomes lowest harmonics
- * - normalize diverging series by max magnitude (otherwise these get too loud)
  */
 /* DONE:
  * - using a 2nd voice with sligthly detuned harmonics gives a fatter sound
  * - using a multiplier for harmonics
  * - harmonics decay:
  *   - linear decay is almost not noticable
+ * - normalize harmonic series by max magnitude to ensure loudness does not fluctuate too much
  */
 
 #include <math.h>
@@ -330,6 +330,7 @@ process_orbit (AppData *self)
   complexd *f = self->f;
   gdouble *hd = self->hd, *m = self->m;
   gdouble tr, ti;
+  gdouble mm = 0.0;
   gint i,j;
   const gint niter = self->niter, nfreq = self->nfreq, ntime = self->ntime;
 
@@ -393,6 +394,19 @@ process_orbit (AppData *self)
   }
   for (i = niter; i < nfreq; i++) {
     f[i].r = f[i].i = 0.0;
+  }
+  // normalize magitude
+  for (i = 0; i < niter; i++) {
+    if (f[i].r > mm) {
+      mm = f[i].r;
+    }
+  }
+  // printf("max magniture: %7.4lf (%sside)\n", mm, ((niter < nfreq) ? "out": "in"));
+  if (mm > 0.0) {
+    mm = 1.0/mm;
+    for (i = 0; i < niter; i++) {
+      f[i].r *= mm;
+    }
   }
   // apply magnitude mode
   switch (UIV_MAG_MODE) {
