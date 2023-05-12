@@ -1,7 +1,7 @@
 /*
  * mandelbrot synthesizer
  *
- * Copyright (C) 2019-2019 Stefan Sauer <ensonic@users.sf.net>
+ * Copyright (C) 2019-2023 Stefan Sauer <ensonic@users.sf.net>
  *
  * gcc -Wall -g  mandelsynth3.c -o mandelsynth3 `pkg-config gtk+-3.0 cairo gstreamer-1.0 gstreamer-app-1.0 --cflags --libs` -lm
  * gcc -Wall -O3 mandelsynth3.c -o mandelsynth3 `pkg-config gtk+-3.0 cairo gstreamer-1.0 gstreamer-app-1.0 --cflags --libs` -lm
@@ -12,6 +12,7 @@
  * - '2': increment center mode
  * - '3': decrement octave
  * - '4': increment octave
+ * - space: 1st record point, afterward print segments to console 
  * - alpha keys (1 oct) to play notes ('y/z') -> c, 's' -> c#, ...
  *
  * need to run
@@ -962,6 +963,24 @@ on_interaction_event (GtkWidget * widget, GdkEvent * event, gpointer user_data)
         case GDK_KEY_m:
           update_note (self, 11);
           break;
+        case GDK_KEY_space: {  // print the path so that we can use it as a preset
+          // TODO(ensonic): sum length and count nr. segments
+          static gdouble lr = 0.0, li = 0.0;
+          static gboolean first = TRUE;
+          if (first) {
+            first = FALSE;
+          } else {
+            gdouble dr,di,len;
+            dr = self->cr - lr;
+            di = self->ci - li;
+            len = sqrt (dr * dr + di * di);
+            printf("{ %7.5ff, %7.5ff, %7.5ff, %7.5ff, %7.5ff },\n",
+              lr, li, dr, di, len);
+          }
+          lr = self->cr;
+          li = self->ci;
+          break;
+        }
         default:
           break;
       }
